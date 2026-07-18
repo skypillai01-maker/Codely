@@ -1,7 +1,7 @@
-# API Specification (v0.6.1)
+# API Specification (v0.7.0)
 
-> **Living Document** | Last Updated: 2026-05-03
-> **Version**: 0.6.1 | **Enforcement**: STRICT
+> **Living Document** | Last Updated: 2026-07-18
+> **Version**: 0.7.0 | **Enforcement**: STRICT
 
 ---
 
@@ -23,8 +23,9 @@ All endpoints MUST return one of the following JSON structures.
 
 ```json
 {
-  "context_id": "string",
-  "response": "string"
+  "response": "string",
+  "tool_used": "string | null",
+  "tool_suggestion": "object | null"
 }
 ```
 
@@ -52,8 +53,7 @@ All endpoints MUST return one of the following JSON structures.
 
 | Constraint | Rule |
 |------------|------|
-| **Context Isolation** | Every request (except health, model, provider) MUST include a `context_id` |
-| **Statelessness** | No session-based data. Every request is self-contained |
+| **Authentication** | All endpoints except health, auth, model, modules, tools list require `Authorization: Bearer <session_id>` |
 | **Versioning** | All endpoints are prefixed with `/api/v1/` |
 | **Local-Only** | NO calls to external APIs. All processing is local |
 
@@ -67,58 +67,190 @@ All endpoints MUST return one of the following JSON structures.
 GET /health
 ```
 
+**Auth:** None (public)
+
 **Response (200):**
 ```json
 {
-  "status": "healthy",
-  "platform": "Codely AI",
-  "version": "0.6.1"
+  "status": "ok",
+  "service": "Codely AI",
+  "ollama": true
+}
+```
+
+**Degraded (Ollama down):**
+```json
+{
+  "status": "degraded",
+  "service": "Codely AI",
+  "ollama": false
 }
 ```
 
 ---
 
-## 4. Chat & Memory (Existing)
+## 4. Authentication
 
-### 4.1 Chat (RAG Enabled)
+### 4.1 Request Login (Page)
+
+```
+GET /api/v1/auth/request-login
+```
+
+**Auth:** None (public)
+
+**Response (200):** HTML login page
+
+### 4.2 Request Login (API)
+
+```
+POST /api/v1/auth/request-login
+```
+
+**Auth:** None (public)
+
+**Payload:**
+```json
+{
+  "email": "string",
+  "display_name": "string (optional)"
+}
+```
+
+**Response (200):**
+```json
+{
+  "message": "Magic link sent! Check your email (or console in dev mode).",
+  "dev_link": "string | null"
+}
+```
+
+### 4.3 Verify Magic Link (GET - Browser Redirect)
+
+```
+GET /api/v1/auth/verify?token=<token>
+```
+
+**Auth:** None (public)
+
+**Query Parameters:**
+| Param | Type | Description |
+|-------|------|-------------|
+| `token` | string | Magic token from email |
+
+**Response (302):** Redirect to `/?session_id=<session_id>`
+
+**Error (400):** HTML error page with "Invalid or expired link"
+
+### 4.4 Verify Magic Link (POST - API)
+
+```
+POST /api/v1/auth/verify
+```
+
+**Auth:** None (public)
+
+**Payload:**
+```json
+{
+  "token": "string"
+}
+```
+
+**Response (200):**
+```json
+{
+  "session_id": "string",
+  "user_id": "string",
+  "email": "string"
+}
+```
+
+### 4.5 Get Current User
+
+```
+GET /api/v1/auth/me
+```
+
+**Auth:** Required (`Depends(get_current_user)`)
+
+**Response (200):**
+```json
+{
+  "user_id": "string",
+  "email": "string",
+  "display_name": "string",
+  "session_id": "string"
+}
+```
+
+### 4.6 Logout
+
+```
+POST /api/v1/auth/logout
+```
+
+**Auth:** Required (`Depends(get_current_user)`)
+
+**Response (200):**
+```json
+{
+  "message": "Logged out successfully"
+}
+```
+
+---
+
+## 5. Chat & Memory
+
+### 5.1 Chat (RAG Enabled)
 
 ```
 POST /api/v1/chat
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Payload:**
 ```json
 {
   "context_id": "string",
   "prompt": "string",
-  "user_id": "string (optional)",
-  "stream": "boolean (default: false)"
+  "mode": "normal | thinking | deep (default: normal)"
 }
 ```
 
 **Response (200):**
 ```json
 {
-  "context_id": "string",
-  "response": "string"
+  "response": "string",
+  "tool_used": "string | null",
+  "tool_suggestion": {
+    "name": "string",
+    "reason": "string"
+  } | null
 }
 ```
 
-### 4.2 Chat with Files & URLs (NEW)
+### 5.2 Chat with Files & URLs
 
 ```
 POST /api/v1/chat-with-files
 Content-Type: multipart/form-data
 ```
 
+**Auth:** Optional (`Depends(get_current_user_optional)`) — anonymous allowed
+
 **Form Fields:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `context_id` | string | Yes | Conversation context |
-| `prompt` | string | Yes | User message |
+| `context_id` | string | No | Conversation context (auto-generated if omitted) |
+| `prompt` | string | No | User message |
+| `mode` | string | No | `normal`, `thinking`, or `deep` (default: normal) |
 | `save_to_memory` | boolean | No | Save attachments to memory (default: false) |
 | `urls` | string | No | Comma-separated URLs |
 | `files` | file[] | No | Multiple file attachments |
+| `execute_tool` | string | No | Force-execute a specific tool module by name |
 
 **Supported File Types:**
 | Type | Extension | Processing |
@@ -134,11 +266,14 @@ Content-Type: multipart/form-data
 **Response (200):**
 ```json
 {
-  "context_id": "string",
   "response": "string",
+  "tool_used": "string | null",
+  "tool_suggestion": "object | null",
+  "mode": "string",
   "attachments": {
     "files": ["file1.pdf", "image.png"],
-    "urls": ["https://example.com"]
+    "urls": ["https://example.com"],
+    "saved": true
   },
   "saved_to_memory": true
 }
@@ -147,6 +282,7 @@ Content-Type: multipart/form-data
 **Example (curl):**
 ```bash
 curl -X POST http://localhost:8889/api/v1/chat-with-files \
+  -H "Authorization: Bearer <session_id>" \
   -F "context_id=test" \
   -F "prompt=Explain this document" \
   -F "files=@document.pdf" \
@@ -159,11 +295,13 @@ curl -X POST http://localhost:8889/api/v1/chat-with-files \
 python clients/cli/codely_cli.py chat "Explain this" --file document.pdf --url https://example.com --save-memory
 ```
 
-### 4.3 Add Memory
+### 5.3 Add Memory
 
 ```
 POST /api/v1/memory/add
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Payload:**
 ```json
@@ -178,29 +316,17 @@ POST /api/v1/memory/add
 ```json
 {
   "status": "success",
-  "message": "Memory added successfully"
+  "message": "Memory added"
 }
 ```
 
-### 4.3 Clear Memory
-
-```
-DELETE /api/v1/memory/clear/{context_id}
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "message": "Memory for {context_id} cleared"
-}
-```
-
-### 4.4 Search Memory
+### 5.4 Search Memory
 
 ```
 POST /api/v1/memory/search
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Payload:**
 ```json
@@ -214,22 +340,39 @@ POST /api/v1/memory/search
 **Response (200):**
 ```json
 {
-  "status": "success",
   "results": [
     {
       "text": "string",
       "metadata": "object",
-      "score": "float"
+      "chunk_index": "integer"
     }
   ]
 }
 ```
 
-### 4.5 Merge Memory (NEW)
+### 5.5 Clear Memory
+
+```
+DELETE /api/v1/memory/clear/{context_id}
+```
+
+**Auth:** Required (`Depends(get_current_user)`)
+
+**Response (200):**
+```json
+{
+  "status": "success",
+  "message": "Memory cleared for {context_id}"
+}
+```
+
+### 5.6 Merge Memory
 
 ```
 POST /api/v1/memory/merge
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 Merge memory from multiple threads into one.
 
@@ -245,22 +388,21 @@ Merge memory from multiple threads into one.
 ```json
 {
   "status": "success",
-  "message": "Successfully merged 10 entries",
-  "entries_merged": 10,
-  "target_context_id": "string",
-  "source_context_ids": ["string", "string"]
+  "entries_merged": 10
 }
 ```
 
 ---
 
-## 4b. Thread Management (NEW)
+## 6. Thread Management
 
-### 4b.1 List Threads
+### 6.1 List Threads
 
 ```
 GET /api/v1/threads
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Response (200):**
 ```json
@@ -269,19 +411,20 @@ GET /api/v1/threads
     {
       "id": "thread_123",
       "entries": 5,
-      "size_bytes": 1024,
-      "exists": true
+      "name": "First message preview..."
     }
   ],
   "count": 1
 }
 ```
 
-### 4b.2 Get Thread Stats
+### 6.2 Get Thread Stats
 
 ```
 GET /api/v1/threads/{context_id}/stats
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Response (200):**
 ```json
@@ -289,15 +432,44 @@ GET /api/v1/threads/{context_id}/stats
   "context_id": "thread_123",
   "entries": 5,
   "size_bytes": 1024,
+  "name": "First message preview...",
   "exists": true
 }
 ```
 
-### 4b.3 Delete Thread
+### 6.3 Get Thread Messages
+
+```
+GET /api/v1/threads/{context_id}/messages
+```
+
+**Auth:** Required (`Depends(get_current_user)`)
+
+**Response (200):**
+```json
+{
+  "context_id": "thread_123",
+  "messages": [
+    {
+      "role": "user",
+      "text": "What is Python?"
+    },
+    {
+      "role": "ai",
+      "text": "Python is a high-level programming language..."
+    }
+  ],
+  "count": 2
+}
+```
+
+### 6.4 Delete Thread
 
 ```
 DELETE /api/v1/threads/{context_id}
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Response (200):**
 ```json
@@ -309,190 +481,68 @@ DELETE /api/v1/threads/{context_id}
 
 ---
 
-## 5. Task Engine (Enhanced)
+## 7. Ingest
 
-### 5.1 Submit Task
+### 7.1 Ingest Text
 
 ```
-POST /api/v1/tasks/submit
+POST /api/v1/ingest
+Content-Type: multipart/form-data
 ```
 
-**Payload:**
-```json
-{
-  "context_id": "string",
-  "text": "string",
-  "metadata": "object (optional)"
-}
-```
+**Auth:** Required (`Depends(get_current_user)`)
+
+**Form Fields:**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `context_id` | string | No | Target context (defaults to user_id) |
+| `text` | string | Yes | Text content to ingest |
+
+**Rate Limiting**: 10 requests per user per 60 seconds
+**Max Active Tasks**: 2 per user
 
 **Response (200):**
 ```json
 {
   "task_id": "string",
-  "status": "submitted"
+  "status": "pending"
 }
 ```
 
-### 5.2 Get Task Status
-
-```
-GET /api/v1/tasks/{task_id}
-```
-
-**Response (200):**
-```json
-{
-  "id": "string",
-  "status": "pending | running | completed | failed | cancelled",
-  "result": "any",
-  "error": "string (if failed)",
-  "progress": "integer (0-100)",
-  "message": "string (progress message)",
-  "created_at": "ISO datetime",
-  "started_at": "ISO datetime (nullable)",
-  "finished_at": "ISO datetime (nullable)"
-}
-```
-
-### 5.3 List Tasks
-
-```
-GET /api/v1/tasks
-```
-
-**Query Parameters:**
-| Param | Type | Description |
-|-------|------|-------------|
-| `user_id` | string | Filter by user (optional) |
-
-**Response (200):**
-```json
-{
-  "tasks": [
-    {
-      "id": "string",
-      "status": "string",
-      "progress": "integer",
-      "created_at": "ISO datetime"
-    }
-  ],
-  "count": "integer"
-}
-```
-
-### 5.4 Stream Task Progress (NEW)
-
-```
-GET /api/v1/tasks/{task_id}/stream
-```
-
-**Response**: Server-Sent Events (SSE)
-```
-data: {"id":"...", "status":"running", "progress":50, "message":"Processing..."}
-
-data: {"id":"...", "status":"completed", "progress":100, "result":"..."}
-```
-
-### 5.5 Cancel Task (NEW)
-
-```
-POST /api/v1/tasks/{task_id}/cancel
-```
-
-**Response (200):**
-```json
-{
-  "status": "cancelled"
-}
-```
-
-**Response (404):**
-```json
-{
-  "status": "error",
-  "detail": "Task not found"
-}
-```
-
----
-
-## 6. Modules (Existing)
-
-### 6.1 List Modules
-
-```
-GET /api/v1/modules
-```
-
-**Response (200):**
-```json
-{
-  "modules": [
-    {
-      "name": "string",
-      "description": "string"
-    }
-  ]
-}
-```
-
-### 6.2 Execute Module
-
-```
-POST /api/v1/modules/execute/{module_name}
-```
-
-**Payload:**
-```json
-{
-  "params": "object"
-}
-```
-
-**Response (200):**
-```json
-{
-  "module": "string",
-  "result": "object"
-}
-```
-
----
-
-## 7. Multi-Modal Ingestion (Existing)
-
-### 7.1 Upload File
+### 7.2 Ingest File
 
 ```
 POST /api/v1/ingest/file
 Content-Type: multipart/form-data
 ```
 
+**Auth:** Required (`Depends(get_current_user)`)
+
 **Form Fields:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `context_id` | string | Yes | Target context |
-| `user_id` | string | Yes | User ID for rate limiting |
+| `context_id` | string | No | Target context (defaults to user_id) |
 | `file` | file | Yes | PDF, Image, Text, DOCX, XLSX, PPTX |
 
 **Rate Limiting**: 10 requests per user per 60 seconds
 **File Size Limit**: 50MB maximum
+**Max Active Tasks**: 2 per user
 
 **Response (200):**
 ```json
 {
-  "status": "submitted",
   "task_id": "string",
-  "message": "File {filename} is being processed in the background."
+  "status": "pending"
 }
 ```
 
-### 7.2 Ingest URL
+### 7.3 Ingest URL
 
 ```
 POST /api/v1/ingest/url
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Payload:**
 ```json
@@ -514,535 +564,225 @@ POST /api/v1/ingest/url
 
 ---
 
-## 8. Model Management (NEW - Phase 2)
+## 8. Model Management
 
-### 8.1 List Available Models
+### 8.1 Get Model Config
 
 ```
-GET /api/v1/model/list
+GET /api/v1/model
 ```
+
+**Auth:** None (public)
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "runtime": "ollama | openai_compat",
-  "runtime_url": "string",
-  "models": [
-    {
-      "name": "string",
-      "size": "string (optional)",
-      "modified_at": "datetime (optional)"
-    }
-  ]
+  "chat_model": "llama3",
+  "embedding_model": "nomic-embed-text"
 }
 ```
 
-### 8.2 Get Current Model
-
-```
-GET /api/v1/model/current
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "model": "string",
-  "runtime": "string",
-  "capabilities": {
-    "vision": "boolean",
-    "streaming": "boolean",
-    "embeddings": "boolean"
-  }
-}
-```
-
-### 8.3 Switch Model
+### 8.2 Switch Model
 
 ```
 POST /api/v1/model/switch
 ```
 
+**Auth:** None (public)
+
 **Payload:**
 ```json
 {
-  "model": "string (required)",
-  "runtime": "string (optional, default: auto-detect)"
+  "model_type": "chat_model | embedding_model",
+  "model_name": "string"
 }
 ```
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "message": "Switched to model {model}",
-  "previous_model": "string",
-  "new_model": "string"
+  "message": "Model chat_model switched to llama3",
+  "config": {
+    "chat_model": "llama3",
+    "embedding_model": "nomic-embed-text"
+  }
 }
 ```
 
-**Response (400 - Model Not Found):**
+**Response (400 - Missing Fields):**
 ```json
 {
-  "status": "error",
-  "detail": "Model {model} not found. Available models: [...]"
-}
-```
-
-### 8.4 Validate Connectivity
-
-```
-POST /api/v1/model/validate
-```
-
-**Payload (optional):**
-```json
-{
-  "runtime": "string (optional)",
-  "url": "string (optional)"
-}
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "connected": "boolean",
-  "runtime": "string",
-  "url": "string",
-  "available_models": ["string"]
+  "detail": "model_type and model_name are required"
 }
 ```
 
 ---
 
-## 9. LLM Runtime Providers (NEW - Phase 2)
+## 9. Task Engine
 
-### 9.1 List Available Runtimes
-
-```
-GET /api/v1/providers
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "runtimes": [
-    {
-      "name": "ollama",
-      "url": "http://localhost:11434",
-      "status": "connected | disconnected",
-      "models_count": "integer"
-    },
-    {
-      "name": "openai_compat",
-      "url": "http://localhost:1234/v1",
-      "status": "connected | disconnected",
-      "models_count": "integer"
-    }
-  ]
-}
-```
-
-### 9.2 Detect Runtime
+### 9.1 Submit Task
 
 ```
-POST /api/v1/providers/detect
+POST /api/v1/tasks/submit
 ```
 
-**Payload (optional):**
-```json
-{
-  "url": "string (optional, default: localhost scan)"
-}
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "detected": "boolean",
-  "runtime": "string (ollama | openai_compat | none)",
-  "url": "string",
-  "message": "string"
-}
-```
-
----
-
-## 10. Project Management (NEW - Phase 2)
-
-### 10.1 Initialize Project
-
-```
-POST /api/v1/project/init
-```
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Payload:**
 ```json
 {
-  "path": "string (required, absolute or relative path)",
-  "auto_detect": "boolean (default: true)",
-  "language": "string (optional, override auto-detect)",
-  "framework": "string (optional)"
+  "context_id": "string",
+  "text": "string",
+  "metadata": "object (optional)"
 }
 ```
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "project_id": "string",
-  "path": "string",
-  "language": "string",
-  "framework": "string (nullable)",
-  "files_count": "integer"
+  "task_id": "string",
+  "status": "submitted"
 }
 ```
 
-### 10.2 Get Project Status
+### 9.2 Get Task Status
 
 ```
-GET /api/v1/project/status
+GET /api/v1/tasks/{task_id}
 ```
+
+**Auth:** None (public)
+
+**Response (200):**
+```json
+{
+  "id": "string",
+  "status": "pending | running | completed | failed | cancelled",
+  "result": "any",
+  "error": "string (if failed)",
+  "progress": "integer (0-100)",
+  "message": "string (progress message)",
+  "created_at": "ISO datetime",
+  "started_at": "ISO datetime (nullable)",
+  "finished_at": "ISO datetime (nullable)"
+}
+```
+
+### 9.3 List Tasks
+
+```
+GET /api/v1/tasks
+```
+
+**Auth:** None (public)
 
 **Query Parameters:**
 | Param | Type | Description |
 |-------|------|-------------|
-| `project_id` | string | Specific project (optional, uses active if not provided) |
+| `user_id` | string | Filter by user (optional) |
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "project_id": "string",
-  "root_path": "string",
-  "language": "string",
-  "framework": "string",
-  "files_count": "integer",
-  "dependencies": ["string"],
-  "last_updated": "ISO datetime",
-  "is_active": "boolean"
-}
-```
-
-### 10.3 List Projects
-
-```
-GET /api/v1/project/list
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "projects": [
+  "tasks": [
     {
-      "project_id": "string",
-      "path": "string",
-      "language": "string",
-      "last_updated": "ISO datetime"
+      "id": "string",
+      "status": "string",
+      "progress": "integer",
+      "created_at": "ISO datetime"
     }
   ],
   "count": "integer"
 }
 ```
 
-### 10.4 Scan Project
+### 9.4 Stream Task Progress
 
 ```
-POST /api/v1/project/scan
+GET /api/v1/tasks/{task_id}/stream
 ```
 
-**Payload:**
-```json
-{
-  "project_id": "string",
-  "deep_scan": "boolean (default: false)"
-}
+**Auth:** None (public)
+
+**Response**: Server-Sent Events (SSE)
 ```
+data: {"id":"...", "status":"running", "progress":50, "message":"Processing..."}
+
+data: {"id":"...", "status":"completed", "progress":100, "result":"..."}
+```
+
+### 9.5 Cancel Task
+
+```
+POST /api/v1/tasks/{task_id}/cancel
+```
+
+**Auth:** None (public)
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "project_id": "string",
-  "scan_duration_ms": "integer",
-  "files_found": "integer",
-  "structure": {
-    "directories": ["string"],
-    "file_types": {
-      "extension": "count"
-    }
-  }
+  "status": "cancelled"
 }
 ```
 
-### 10.5 Get Project Tree
-
-```
-GET /api/v1/project/tree
-```
-
-**Query Parameters:**
-| Param | Type | Description |
-|-------|------|-------------|
-| `project_id` | string | Project ID |
-| `path` | string | Relative path within project (optional) |
-| `depth` | integer | Max depth (default: 3, max: 10) |
-
-**Response (200):**
+**Response (404):**
 ```json
 {
-  "status": "success",
-  "project_id": "string",
-  "path": "string",
-  "tree": {
-    "name": "root",
-    "type": "directory",
-    "children": [
-      {
-        "name": "src",
-        "type": "directory",
-        "children": [...]
-      },
-      {
-        "name": "main.py",
-        "type": "file",
-        "size": "integer"
-      }
-    ]
-  }
-}
-```
-
-### 10.6 Close Project
-
-```
-DELETE /api/v1/project/close
-```
-
-**Query Parameters:**
-| Param | Type | Description |
-|-------|------|-------------|
-| `project_id` | string | Project to close |
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "message": "Project {project_id} closed"
+  "detail": "Task not found"
 }
 ```
 
 ---
 
-## 11. Execution Engine (NEW - Phase 2)
+## 10. Modules
 
-> **READ-ONLY OPERATIONS ONLY** | No file writes permitted
-
-### 11.1 Analyze File
+### 10.1 List Modules
 
 ```
-POST /api/v1/execute/analyze
+GET /api/v1/modules
 ```
 
-**Payload:**
-```json
-{
-  "path": "string (required, absolute or project-relative path)",
-  "project_id": "string (optional)",
-  "include_imports": "boolean (default: true)",
-  "include_exports": "boolean (default: true)",
-  "include_functions": "boolean (default: true)"
-}
-```
+**Auth:** None (public)
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "path": "string",
-  "language": "string",
-  "analysis": {
-    "lines": "integer",
-    "imports": ["string"],
-    "exports": ["string"],
-    "functions": [
-      {
-        "name": "string",
-        "line": "integer",
-        "params": ["string"]
-      }
-    ],
-    "classes": [
-      {
-        "name": "string",
-        "line": "integer",
-        "methods": ["string"]
-      }
-    ]
-  }
-}
-```
-
-### 11.2 Analyze Project
-
-```
-POST /api/v1/execute/analyze-project
-```
-
-**Payload:**
-```json
-{
-  "project_id": "string",
-  "options": {
-    "include_tests": "boolean (default: false)",
-    "include_deps": "boolean (default: true)"
-  }
-}
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "project_id": "string",
-  "summary": {
-    "total_files": "integer",
-    "total_lines": "integer",
-    "languages": {
-      "extension": "count"
-    },
-    "complexity_score": "integer (0-100)"
-  }
-}
-```
-
-### 11.3 Explain Code
-
-```
-POST /api/v1/execute/explain
-```
-
-**Payload:**
-```json
-{
-  "path": "string (required)",
-  "focus": "string (optional, e.g., 'function_name' or 'class_name')",
-  "project_id": "string (optional)",
-  "depth": "basic | detailed (default: basic)"
-}
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "path": "string",
-  "explanation": "string (markdown formatted)",
-  "focus_item": "string (if focus was specified)"
-}
-```
-
-### 11.4 Suggest Improvements
-
-```
-POST /api/v1/execute/suggest
-```
-
-**Payload:**
-```json
-{
-  "path": "string (required)",
-  "project_id": "string (optional)",
-  "category": "all | performance | security | style | bugs (default: all)"
-}
-```
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "path": "string",
-  "suggestions": [
+  "modules": [
     {
-      "line": "integer (nullable)",
-      "type": "performance | security | style | bug",
-      "severity": "low | medium | high",
-      "message": "string",
-      "suggestion": "string",
-      "code_snippet": "string (optional)"
+      "name": "string",
+      "description": "string"
     }
   ]
 }
 ```
 
-### 11.5 Search Code
+### 10.2 Execute Module
 
 ```
-POST /api/v1/execute/search
+POST /api/v1/modules/execute/{module_name}
 ```
+
+**Auth:** Required (`Depends(get_current_user)`)
 
 **Payload:**
 ```json
 {
-  "pattern": "string (required)",
-  "project_id": "string (optional)",
-  "path": "string (optional, search within specific path)",
-  "glob": "string (optional, e.g., '**/*.py')",
-  "case_sensitive": "boolean (default: false)",
-  "regex": "boolean (default: false)"
+  "params": "object"
 }
 ```
 
 **Response (200):**
 ```json
 {
-  "status": "success",
-  "pattern": "string",
-  "matches": [
-    {
-      "file": "string",
-      "line": "integer",
-      "content": "string",
-      "context": "string (surrounding lines)"
-    }
-  ],
-  "count": "integer"
-}
-```
-
-### 11.6 Read File
-
-```
-GET /api/v1/execute/read
-```
-
-**Query Parameters:**
-| Param | Type | Description |
-|-------|------|-------------|
-| `path` | string | Absolute or project-relative path |
-| `project_id` | string | For relative paths |
-| `start_line` | integer | Start line (default: 1) |
-| `end_line` | integer | End line (default: 100) |
-
-**Response (200):**
-```json
-{
-  "status": "success",
-  "path": "string",
-  "lines": "integer (total)",
-  "content": "string (requested range)",
-  "truncated": "boolean"
+  "module": "string",
+  "result": "object"
 }
 ```
 
 ---
 
-## 11. Phase 3: Tools API
+## 11. Tools API
 
 ### 11.1 List Tools
 
@@ -1056,27 +796,18 @@ GET /api/v1/execute/read
   "tools": [
     {
       "name": "FileWrite",
-      "description": "Write or update files safely within the workspace root",
-      "requires_permission": true,
-      "permission_level": "write"
+      "description": "Write or update files within workspace",
+      "requires_permission": true
     },
     {
       "name": "SandboxExec",
-      "description": "Execute commands in a sandboxed environment",
-      "requires_permission": true,
-      "permission_level": "execute"
+      "description": "Execute commands in sandboxed environment",
+      "requires_permission": true
     },
     {
       "name": "TestGen",
-      "description": "Generate unit tests for code files",
-      "requires_permission": false,
-      "permission_level": "read"
-    },
-    {
-      "name": "WebSearch",
-      "description": "Search the internet for real-time information",
-      "requires_permission": true,
-      "permission_level": "external"
+      "description": "Generate unit tests for code",
+      "requires_permission": false
     }
   ]
 }
@@ -1230,10 +961,15 @@ GET /api/v1/execute/read
 | HTTP Code | Meaning | When Used |
 |-----------|---------|-----------|
 | 200 | Success | Normal operation |
-| 400 | Bad Request | Invalid input, missing required fields |
+| 302 | Redirect | Magic link verification (GET) |
+| 400 | Bad Request | Invalid input, missing required fields, expired token |
+| 401 | Unauthorized | Missing or invalid session |
 | 404 | Not Found | Resource doesn't exist |
+| 413 | Payload Too Large | File exceeds size limit |
 | 422 | Unprocessable | Valid JSON but invalid semantics |
+| 429 | Rate Limited | Too many requests per time window |
 | 500 | Server Error | Unexpected internal failure |
+| 503 | Service Unavailable | Runtime error (e.g. Ollama not initialized) |
 
 ---
 
@@ -1241,8 +977,10 @@ GET /api/v1/execute/read
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.7.0 | 2026-07-18 | Thread message history loading, server-side thread names, deterministic user_id (hash-based), embedding fallback (numpy hash), conversation memory persistence (rag.learn), spec cleanup |
+| 0.6.2 | 2026-05-04 | Memory merge endpoint, messages endpoint, thread name derivation, auth refactor |
 | 0.6.1 | 2026-05-03 | Production fixes: SSE progress, cancel tasks, rate limiting, timeouts, retry logic |
-| 0.6.0 | 2026-05-03 | HNSW vector search, document chunking, document management API |
+| 0.6.0 | 2026-05-03 | HNSW vector search, document chunking |
 | 0.5.0 | 2026-05-02 | Phase 3: FileWrite, SandboxExec, TestGen tools API |
 | 0.4.0 | 2026-05-02 | Thinking modes, markdown responses, permission-based web search, auth |
 | 0.3.1 | 2026-04-12 | Multi-user auth, email magic links, user-scoped storage |
@@ -1254,5 +992,5 @@ GET /api/v1/execute/read
 
 ---
 
-**Document Version**: 0.6.0  
+**Document Version**: 0.7.0
 **Enforcement**: STRICT - All new endpoints must follow this spec

@@ -1,6 +1,6 @@
-# Coding Conventions & Standards (v0.6.0)
+# Coding Conventions & Standards (v0.7.0)
 
-> **Living Document** | Last Updated: 2026-05-02
+> **Living Document** | Last Updated: 2026-07-18
 > **Enforcement**: STRICT
 
 ---
@@ -333,8 +333,30 @@ def function(param1: str, param2: int = 0) -> Dict[str, Any]:
 - `external` - User approval required (WebSearch)
 
 ---
+## 9. Frontend Conventions
 
-## 9. Code Review Checklist
+### 9.1 localStorage Safety
+- Functions that write to `localStorage` MUST be wrapped in try/catch to handle QuotaExceededError or disabled storage
+
+### 9.2 DOM-First Rendering
+- DOM rendering operations (`appendChild`, `innerHTML`, `insertAdjacentHTML`) MUST happen BEFORE side-effects (`localStorage.setItem`, `fetch`)
+- This ensures the user sees UI updates even if a side-effect fails
+
+### 9.3 Thread Name Source
+- Thread name is sourced from server response (`t.name`), not from localStorage
+- `selectThread()` is `async` — it fetches past messages from the messages endpoint
+
+### 9.4 Event Handler Definitions
+- All `onclick` handlers referenced in HTML must have corresponding function definitions in JavaScript
+- No dangling HTML event attributes pointing to undefined functions
+
+### 9.5 DOM Element References
+- DOM element IDs must be referenced via `document.getElementById()` with null checks
+- Never assume an element exists — always guard against null
+
+---
+
+## 10. Code Review Checklist
 
 Before committing any code:
 
@@ -350,5 +372,5 @@ Before committing any code:
 
 ---
 
-**Document Version**: 0.6.0
+**Document Version**: 0.7.0
 **Enforcement**: STRICT

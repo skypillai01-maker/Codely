@@ -1,6 +1,6 @@
-# STRICT RULES CHECKLIST (v0.6.0)
+# STRICT RULES CHECKLIST (v0.7.0)
 
-> **Living Document** | Last Updated: 2026-05-03
+> **Living Document** | Last Updated: 2026-07-18
 > **Enforcement**: MANDATORY - Every rule here comes from a real bug/mistake
 > **Philosophy**: "Treat every mistake as a rule, correct once, never repeat!"
 
@@ -150,6 +150,108 @@ logger.info(f"Processing {context_id}")  # This is actually OK, but don't use " 
 logger.info(f"Processing context_id={context_id}")
 ```
 
+### Rule #11: DOM VARIABLE DECLARATION (From Bug Fix 2026-07-18)
+**MISTAKE**: Used `threadList` DOM reference in JavaScript before declaring it with `let`/`const`
+**RULE**: Never rely on implicit globals for DOM elements — use `document.getElementById()` or explicit `let`/`const`
+```javascript
+// ❌ WRONG - Implicit global (ReferenceError when element missing)
+function refreshThreadList() {
+    threadList.innerHTML = "";  // ReferenceError: threadList is not defined
+}
+
+// ✅ CORRECT - Explicit DOM lookup
+const threadList = document.getElementById("threadList");
+function refreshThreadList() {
+    if (threadList) threadList.innerHTML = "";
+}
+```
+
+### Rule #12: CONVERSATION MUST BE SAVED TO MEMORY (From Bug Fix 2026-07-18)
+**MISTAKE**: Chat endpoints never called `rag.learn()` after generating a response
+**RULE**: Every chat endpoint MUST save the Q&A pair to FAISS memory after generation
+```python
+# ✅ CORRECT - Save conversation to memory
+result = rag.generate_with_context(context_id=context_id, prompt=prompt, ...)
+conversation = f"User: {prompt}\n\nAssistant: {result['response']}"
+rag.learn(context_id, conversation, {"type": "conversation", "mode": mode})
+```
+
+### Rule #13: EMBEDDING MUST HAVE FALLBACK (From Bug Fix 2026-07-18)
+**MISTAKE**: `OllamaAdapter.embed()` only called `/api/embeddings` — failed on Ollama 0.30.6+
+**RULE**: Always provide a fallback embedding method that works without external dependencies
+```python
+# ✅ CORRECT - Try Ollama first, fall back to numpy hash embedding
+def embed(self, text):
+    try:
+        return self._ollama_embed(text)
+    except Exception:
+        return self._fallback_embed(text)  # zero-dependency numpy fallback
+```
+
+### Rule #14: ONLY SHOW THREADS WITH CONTENT (From Bug Fix 2026-07-18)
+**MISTAKE**: `/api/v1/threads` returned every context directory including empty ones
+**RULE**: Filter threads by `entries > 0` before returning them in the thread list
+```python
+# ✅ CORRECT - Skip empty threads
+threads = []
+for c in store.list_contexts():
+    stats = store.get_stats(c)
+    if stats.get("entries", 0) > 0:
+        threads.append({"id": c})
+return {"threads": threads}
+```
+
+### Rule #15: RENDER BEFORE LOCALSTORAGE WRITE (From Bug Fix 2026-07-18)
+**MISTAKE**: `createThread()` called `saveThreadMeta()` (localStorage.setItem) before `renderThreadList()`. If localStorage throws (quota reached, private browsing, disabled storage), the function aborts before the sidebar renders.
+**RULE**: Always render the DOM first, then perform side-effects with try/catch
+```javascript
+// ❌ WRONG - localStorage write can abort rendering
+threads.unshift(thread);
+saveThreadMeta();       // May throw!
+renderThreadList();     // Never reached
+selectThread(thread.id); // Never reached
+
+// ✅ CORRECT - Render first, side-effect safely
+threads.unshift(thread);
+renderThreadList();
+selectThread(thread.id);
+try { saveThreadMeta(); } catch(e) { console.warn(e); }
+```
+
+### Rule #16: SERVER-SIDE THREAD NAME (From Bug Fix 2026-07-18)
+**MISTAKE**: Thread names stored only in localStorage. After cache clear or device switch, threads showed truncated garbage IDs.
+**RULE**: Always derive a human-readable thread name from the first FAISS entry's text on the server side
+```python
+# get_stats() MUST return a name derived from FAISS metadata
+def get_stats(self, context_id):
+    if entries > 0:
+        first_text = metadata[0]["text"]  # "User: Say hello\n\nAssistant: Hello!"
+        name = first_text.replace("User: ", "").split("\n")[0][:60]
+    return {"name": name, "entries": entries}
+```
+
+### Rule #17: LOAD PAST MESSAGES FROM SERVER (From Bug Fix 2026-07-18)
+**MISTAKE**: Server-loaded threads had `messages: []`. Past conversation text was invisible.
+**RULE**: Provide a server endpoint that reads FAISS metadata and returns parsed messages. Frontend fetches messages when selecting a thread.
+```python
+# Server endpoint
+@app.get("/api/v1/threads/{context_id}/messages")
+async def get_thread_messages(context_id, current_user):
+    store = get_memory_store(current_user["user_id"])
+    messages = store.get_messages(context_id)  # reads metadata.pkl
+    return {"messages": messages}
+
+# Frontend - async selectThread
+async function selectThread(threadId) {
+    currentThread = threads.find(t => t.id === threadId);
+    if (currentThread.messages.length === 0 && currentThread.entries > 0) {
+        const resp = await fetch(`/api/v1/threads/${id}/messages`);
+        currentThread.messages = (await resp.json()).messages || [];
+    }
+    renderMessages();
+}
+```
+
 ---
 
 ## 📋 PRE-COMMIT CHECKLIST (Must Pass All)
@@ -171,6 +273,16 @@ logger.info(f"Processing context_id={context_id}")
 - [ ] `list_documents` endpoint returns proper structure
 - [ ] Delete endpoint rebuilds index correctly
 
+### Conversation Memory
+- [ ] Chat endpoint saves Q&A to FAISS via `rag.learn()` after generation
+- [ ] Chat-with-files endpoint saves Q&A to FAISS via `rag.learn()` after generation
+- [ ] Conversation saved as `"User: {prompt}\n\nAssistant: {response}"` with metadata
+
+### Embedding Fallback
+- [ ] `embed()` method has fallback when Ollama API fails
+- [ ] Fallback does not depend on external packages (numpy only)
+- [ ] Embedding dimension is consistent (768)
+
 ### Error Handling
 - [ ] No `except Exception: pass` anywhere
 - [ ] All except blocks log with `logger.error()`
@@ -181,6 +293,20 @@ logger.info(f"Processing context_id={context_id}")
 - [ ] `hashlib` imported when generating doc_id
 - [ ] `numpy as np` imported when using FAISS operations
 - [ ] No wildcard imports (`from X import *`)
+
+### Thread Listing
+- [ ] `/api/v1/threads` filters out contexts with 0 entries
+- [ ] Stats checked before adding to response (`get_stats(context_id).entries > 0`)
+
+### Frontend (Web UI)
+- [ ] DOM elements accessed via `document.getElementById()`, not implicit globals
+- [ ] All variables declared with `let`/`const` before use
+- [ ] Null/undefined checks before accessing DOM element properties
+- [ ] `createThread()` calls `renderThreadList()` + `selectThread()` before `saveThreadMeta()`
+- [ ] `saveThreadMeta()` wrapped in try/catch in every calling function
+- [ ] Thread names sourced from server (`t.name`), not localStorage
+- [ ] `selectThread()` is `async` — fetches past messages instead of showing empty chat
+- [ ] `clearMemory()` and `renameThread()` functions exist (not just onclick attributes)
 
 ### Syntax
 - [ ] Straight quotes for all strings
@@ -216,6 +342,41 @@ logger.info(f"Processing context_id={context_id}")
 **Cause**: No `doc_id` in metadata
 **Fix**: Always generate and store `doc_id` with metadata
 
+### Pattern #6: Undefined DOM Variable Reference
+**Symptom**: `ReferenceError: threadList is not defined` in Web UI
+**Cause**: Frontend code references DOM elements as undeclared globals
+**Fix**: Always use `document.getElementById("id")` and declare with `const`/`let`
+
+### Pattern #7: Lost Conversation Memory
+**Symptom**: Chat history vanishes after server restart
+**Cause**: Chat endpoints never saved Q&A pairs to FAISS memory via `rag.learn()`
+**Fix**: Always call `rag.learn()` after `rag.generate_with_context()` in every chat endpoint
+
+### Pattern #8: Silent Embedding Failure
+**Symptom**: FAISS memory saves fail silently — index stays at 0 entries
+**Cause**: Ollama `/api/embeddings` fails but exception is swallowed; no fallback
+**Fix**: Use hash-based numpy embedding fallback when Ollama embedding API is unavailable
+
+### Pattern #9: Empty Threads in Sidebar
+**Symptom**: Threads with "Empty chat" label appear in the sidebar
+**Cause**: `/api/v1/threads` returns context directories even when they have 0 FAISS entries
+**Fix**: Filter threads by `entries > 0` in the list endpoint
+
+### Pattern #10: Empty Sidebar After Restart
+**Symptom**: Sidebar completely empty after re-login — no threads displayed, "New Chat" appears
+**Cause**: `createThread()` calls `saveThreadMeta()` (localStorage.setItem) BEFORE `renderThreadList()`. If localStorage throws (quota/private mode), the entire function aborts before rendering.
+**Fix**: Render thread list and select the thread FIRST, then try/catch localStorage write.
+
+### Pattern #11: Unrecognizable Thread Names
+**Symptom**: Threads show as truncated IDs like "thread_a1b2c3d4e5f6…" instead of meaningful names
+**Cause**: Thread name stored only in localStorage. After cache clear, no server-side name exists.
+**Fix**: Derive thread name from first FAISS entry's text. `get_stats()` includes a `name` field.
+
+### Pattern #12: Empty Chat Area for Past Threads
+**Symptom**: Clicking a past thread shows blank chat window — no messages displayed
+**Cause**: `loadThreads()` sets `messages: []` for server-loaded threads. No endpoint returns message text.
+**Fix**: Add `GET /api/v1/threads/{id}/messages` endpoint that reads FAISS metadata.pkl and parses user/ai pairs. Frontend fetches messages on thread selection.
+
 ---
 
 ## 📖 STRICT CODING STANDARDS
@@ -249,7 +410,7 @@ core/memory/vector_store.py
 
 ---
 
-**Document Version**: 0.6.0  
-**Last Updated**: 2026-05-03  
+**Document Version**: 0.7.0  
+**Last Updated**: 2026-07-18  
 **Enforcement**: ALL code changes MUST pass this checklist  
 **Violation Consequence**: Code rejected, bug WILL reoccur

@@ -280,6 +280,10 @@ async def chat(
         session_id=context_id,
         mode=mode
     )
+
+    conversation = f"User: {prompt}\n\nAssistant: {result['response']}"
+    rag.learn(context_id, conversation, {"type": "conversation", "mode": mode})
+
     return {
         "response": result["response"],
         "tool_used": result.get("tool_used"),
@@ -339,6 +343,10 @@ async def chat_with_files(
             mode=mode,
             execute_tool=execute_tool
         )
+
+        conversation = f"User: {prompt}\n\nAssistant: {result['response']}"
+        rag.learn(context_id, conversation, {"type": "conversation", "mode": mode})
+
         return {
             "response": result["response"],
             "tool_used": result.get("tool_used"),
@@ -528,7 +536,16 @@ async def list_threads(current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
     store = get_memory_store(user_id)
     contexts = store.list_contexts()
-    return {"threads": [{"id": c} for c in contexts], "count": len(contexts)}
+    threads = []
+    for c in contexts:
+        stats = store.get_stats(c)
+        if stats.get("entries", 0) > 0:
+            threads.append({
+                "id": c,
+                "entries": stats["entries"],
+                "name": stats.get("name", c[:20])
+            })
+    return {"threads": threads, "count": len(threads)}
 
 
 @app.get("/api/v1/threads/{context_id}/stats")
@@ -542,6 +559,21 @@ async def get_thread_stats(
         stats = store.get_stats(context_id)
         return stats
     except Exception:
+        raise HTTPException(404, "Thread not found")
+
+
+@app.get("/api/v1/threads/{context_id}/messages")
+async def get_thread_messages(
+    context_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["user_id"]
+    store = get_memory_store(user_id)
+    try:
+        messages = store.get_messages(context_id)
+        return {"context_id": context_id, "messages": messages, "count": len(messages)}
+    except Exception as e:
+        logger.warning(f"Failed to get messages for {context_id}: {e}")
         raise HTTPException(404, "Thread not found")
 
 
