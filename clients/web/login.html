@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codely AI - Sign In</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #1a1a1a;
+            color: #ececec;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-container {
+            width: 100%;
+            max-width: 400px;
+            padding: 20px;
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .logo h1 {
+            font-size: 2rem;
+            font-weight: 600;
+            color: #10a37f;
+            margin-bottom: 8px;
+        }
+
+        .logo p {
+            color: #8e8e8e;
+            font-size: 0.9rem;
+        }
+
+        .login-card {
+            background: #2d2d2d;
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+        }
+
+        .login-card h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .login-card .subtitle {
+            color: #8e8e8e;
+            font-size: 0.9rem;
+            margin-bottom: 24px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #c5c5c5;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 16px;
+            background: #404040;
+            border: 1px solid #565656;
+            border-radius: 8px;
+            color: #ececec;
+            font-size: 1rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #10a37f;
+            box-shadow: 0 0 0 3px rgba(16, 163, 127, 0.2);
+        }
+
+        .form-group input::placeholder {
+            color: #8e8e8e;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 12px 16px;
+            background: #10a37f;
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn-primary:hover {
+            background: #0d8c6d;
+        }
+
+        .btn-primary:disabled {
+            background: #565656;
+            cursor: not-allowed;
+        }
+
+        .message {
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            display: none;
+        }
+
+        .message.success {
+            display: block;
+            background: rgba(16, 163, 127, 0.1);
+            border: 1px solid rgba(16, 163, 127, 0.3);
+            color: #10a37f;
+        }
+
+        .message.error {
+            display: block;
+            background: rgba(220, 38, 38, 0.1);
+            border: 1px solid rgba(220, 38, 38, 0.3);
+            color: #ef4444;
+        }
+
+        .message.info {
+            display: block;
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            color: #3b82f6;
+        }
+
+        .dev-link {
+            margin-top: 12px;
+            padding: 8px 12px;
+            background: #404040;
+            border-radius: 6px;
+            word-break: break-all;
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: #10a37f;
+        }
+
+        .dev-link a {
+            color: #10a37f;
+            text-decoration: none;
+        }
+
+        .dev-link a:hover {
+            text-decoration: underline;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 24px;
+            color: #8e8e8e;
+            font-size: 0.8rem;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">
+            <h1>Codely AI</h1>
+            <p>Your personal AI software engineer</p>
+        </div>
+
+        <div class="login-card">
+            <h2>Sign in</h2>
+            <p class="subtitle">Enter your email to receive a magic link</p>
+
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="email">Email address</label>
+                    <input type="email" id="email" placeholder="you@example.com" required autocomplete="email">
+                </div>
+
+                <button type="submit" class="btn-primary" id="submit-btn">
+                    Send Magic Link
+                </button>
+            </form>
+
+            <div id="message" class="message"></div>
+        </div>
+
+        <div class="footer">
+            <p>By signing in, you agree to use Codely AI responsibly.</p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('login-form');
+        const emailInput = document.getElementById('email');
+        const submitBtn = document.getElementById('submit-btn');
+        const messageDiv = document.getElementById('message');
+
+        function showMessage(type, text) {
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = text;
+        }
+
+        function setLoading(loading) {
+            if (loading) {
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span class="spinner"></span>Sending...';
+            } else {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = 'Send Magic Link';
+            }
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            setLoading(true);
+            messageDiv.className = 'message';
+
+            try {
+                const response = await fetch('/api/v1/auth/request-login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: emailInput.value })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    showMessage('success', data.message);
+
+                    if (data.dev_link) {
+                        messageDiv.innerHTML += `
+                            <div class="dev-link">
+                                🔑 Dev mode - click to login: <a href="${data.dev_link}">Sign In</a>
+                            </div>
+                        `;
+                    }
+                } else {
+                    showMessage('error', data.detail || 'Failed to send magic link');
+                }
+            } catch (error) {
+                showMessage('error', 'Network error. Please try again.');
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const sessionError = urlParams.get('error');
+        if (sessionError) {
+            showMessage('error', decodeURIComponent(sessionError));
+        }
+    </script>
+</body>
+</html>

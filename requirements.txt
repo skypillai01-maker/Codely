@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+requests
+pydantic
+numpy
+faiss-cpu
+python-multipart
+duckduckgo-search
+pypdf
+pillow
+python-docx
+openpyxl
+python-pptx
+python-dotenv
+beautifulsoup4
+lxml
