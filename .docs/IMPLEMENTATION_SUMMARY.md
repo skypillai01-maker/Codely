@@ -1,7 +1,7 @@
 # Codely AI Platform - Implementation Summary
 
-> **Version**: 0.7.0 | **Last Updated**: 2026-07-18
-> **Status**: Production Ready | Phase 3 Write/Exec/TestGen Implemented | Production Fixes Applied
+> **Version**: 0.7.1 | **Last Updated**: 2026-07-20
+> **Status**: Production Ready | Phase 3 Complete | Document Management + Auth Rate Limiting + Conversation Persistence
 
 ---
 
@@ -81,6 +81,13 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 **Root Cause**: `createThread()` called `saveThreadMeta()` before `renderThreadList()`. If `localStorage.setItem` threw (quota exceeded / private mode), the exception aborted the whole function and the sidebar never rendered
 **Fix**: Call `renderThreadList()` first, then wrap `saveThreadMeta()` in try/catch
 **Files**: `clients/web/index.html`
+
+### 2.9 Auth Endpoints Vulnerable to Brute Force (Fix #20260720)
+
+**Issue**: `/api/v1/auth/request-login` and `/api/v1/auth/verify` had no rate limiting, making them vulnerable to brute force attacks
+**Root Cause**: Missing rate limiting on auth endpoints
+**Fix**: Added per-email rate limiting to request-login (5 req/min) and per-token rate limiting to verify (10 req/min) using existing `check_rate_limit` function
+**Files**: `core/api/main.py`
 
 ---
 
@@ -196,6 +203,13 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | POST | `/api/v1/memory/add` | Add to memory |
 | DELETE | `/api/v1/memory/clear/{id}` | Clear memory |
 | POST | `/api/v1/memory/merge` | Merge threads |
+
+### 4.3.5 Document Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/documents` | List all documents (optionally by context) |
+| DELETE | `/api/v1/documents/{doc_id}` | Delete document by ID (from all contexts or specific one) |
 
 ### 4.4 Threads
 
@@ -376,6 +390,7 @@ python core/api/main.py
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.7.1 | 2026-07-20 | Merge remote changes into local: Document Management API (list_documents, delete_document in FAISSVectorStore and corresponding endpoints), auth endpoint rate limiting, filename as source metadata in file ingestion; preserves conversation persistence, thread name derivation, and message history |
 | 0.7.0 | 2026-07-18 | Conversation persistence (rag.learn), embedding fallback for Ollama 0.30.6+, deterministic user_id (MD5 hash), empty sidebar fix, thread message history loading, thread name derivation, spec cleanup |
 | 0.6.1 | 2026-05-03 | Production fixes: timeouts, retry logic, rate limiting, SSE, progress tracking, .env.example |
 | 0.6.0 | 2026-05-03 | HNSW vector search, document chunking, document management API |
