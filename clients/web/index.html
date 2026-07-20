@@ -959,6 +959,25 @@
             }
         }
 
+        async function loadThreads() {
+            try {
+                const resp = await fetch('/api/v1/threads', { headers: getAuthHeaders() });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                threads = (data.threads || []).map(t => ({
+                    id: t.id,
+                    name: t.name || t.id.slice(0, 20),
+                    entries: t.entries || 0,
+                    messages: []
+                }));
+                if (threads.length > 0) {
+                    selectThread(threads[0].id);
+                }
+            } catch (e) {
+                console.warn('Failed to load threads:', e);
+            }
+        }
+
         function updateModeButtons() {
             document.querySelectorAll('.mode-btn').forEach(btn => {
                 btn.classList.toggle('active', btn.dataset.mode === currentMode);
@@ -977,6 +996,28 @@
             window.location.href = '/api/v1/auth/request-login';
         }
 
+        function clearMemory() {
+            if (!currentThread) return;
+            if (!confirm('Clear memory for this thread? This cannot be undone.')) return;
+            apiFetch(`/api/v1/memory/clear/${encodeURIComponent(currentThread.id)}`, { method: 'DELETE' }).then(() => {
+                currentThread.messages = [];
+                currentThread.entries = 0;
+                renderMessages();
+                renderThreadList();
+            }).catch(() => alert('Failed to clear memory'));
+        }
+
+        function renameThread() {
+            if (!currentThread) return;
+            const name = prompt('New thread name:', currentThread.name);
+            if (name && name.trim()) {
+                currentThread.name = name.trim();
+                currentThreadName.textContent = currentThread.name;
+                renderThreadList();
+                try { saveThreadMeta(); } catch(e) {}
+            }
+        }
+
         const chatContainer = document.getElementById('chat-container');
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
@@ -993,6 +1034,7 @@
         const mergeCancel = document.getElementById('merge-cancel');
         const mergeConfirm = document.getElementById('merge-confirm');
         const clearMemoryBtn = document.getElementById('clear-memory-btn');
+        const threadList = document.getElementById('thread-list');
 
         userInput.addEventListener('input', function() {
             this.style.height = 'auto';
@@ -1001,6 +1043,12 @@
 
         function generateThreadId() {
             return 'thread_' + Date.now() + '_' + Math.random().toString(36).substr(2,9);
+        }
+
+        function saveThreadMeta() {
+            const meta = {};
+            threads.forEach(t => { meta[t.id] = { name: t.name, created: t.created }; });
+            localStorage.setItem('thread_meta', JSON.stringify(meta));
         }
 
         function createThread(name = null) {
@@ -1013,6 +1061,7 @@
             threads.unshift(thread);
             renderThreadList();
             selectThread(thread.id);
+            try { saveThreadMeta(); } catch(e) { console.warn('localStorage error:', e); }
         }
 
         function renderThreadList() {
@@ -1044,19 +1093,35 @@
             });
         }
 
-        function selectThread(threadId) {
+        async function selectThread(threadId) {
             currentThread = threads.find(t => t.id === threadId);
-            if (currentThread) {
-                currentThreadName.textContent = currentThread.name;
-                renderMessages();
-                renderThreadList();
+            if (!currentThread) return;
+            currentThreadName.textContent = currentThread.name;
+            if (currentThread.messages.length === 0 && currentThread.entries > 0) {
+                try {
+                    const resp = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}/messages`, { headers: getAuthHeaders() });
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        currentThread.messages = data.messages || [];
+                        if (currentThread.name === currentThread.id.slice(0, 20) && data.messages && data.messages.length > 0) {
+                            const first = data.messages[0].text;
+                            currentThread.name = first.length > 50 ? first.slice(0, 50) + '...' : first;
+                            currentThreadName.textContent = currentThread.name;
+                        }
+                    }
+                } catch (e) { console.warn('Failed to load messages:', e); }
             }
+            renderMessages();
+            renderThreadList();
         }
 
-        function deleteThread(threadId) {
+        async function deleteThread(threadId) {
             if (!confirm('Delete this chat? This cannot be undone.')) return;
 
+            await apiFetch(`/api/v1/threads/${encodeURIComponent(threadId)}`, { method: 'DELETE' }).catch(() => {});
+
             threads = threads.filter(t => t.id !== threadId);
+            saveThreadMeta();
             if (currentThread && currentThread.id === threadId) {
                 if (threads.length >0) {
                     selectThread(threads[0].id);
@@ -1550,7 +1615,10 @@
         (async function init() {
             const authenticated = await checkAuth();
             if (authenticated) {
-                createThread();
+                await loadThreads();
+                if (threads.length === 0) {
+                    createThread();
+                }
             }
         })();
     </script>

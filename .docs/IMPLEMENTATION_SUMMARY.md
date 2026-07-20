@@ -1,6 +1,6 @@
 # Codely AI Platform - Implementation Summary
 
-> **Version**: 0.6.1 | **Last Updated**: 2026-05-03
+> **Version**: 0.7.0 | **Last Updated**: 2026-07-18
 > **Status**: Production Ready | Phase 3 Write/Exec/TestGen Implemented | Production Fixes Applied
 
 ---
@@ -54,6 +54,34 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 - Added web UI progress bars and toast notifications
 **Files**: `core/task_engine/manager.py`, `core/api/main.py`, `clients/web/index.html`
 
+### 2.5 Conversation Not Saved to Memory (Fix #20260718)
+
+**Issue**: Chat messages were never persisted to FAISS memory
+**Root Cause**: `rag.learn()` was never called from chat endpoints — the function existed but was not wired in
+**Fix**: Always call `rag.learn()` after `rag.generate_with_context()` in every chat endpoint
+**Files**: `core/api/main.py` (chat, chat-with-files)
+
+### 2.6 Embedding Failure on Ollama 0.30.6+ (Fix #20260718)
+
+**Issue**: Memory saves failed silently on newer Ollama versions
+**Root Cause**: Ollama removed `/api/embeddings` in 0.30.6+ — the adapter only tried that single endpoint
+**Fix**: Fallback chain — try `/api/embed` first (new endpoint), fall back to numpy hash-based embedding
+**Files**: `core/llm/adapters/ollama.py`
+
+### 2.7 Non-deterministic user_id (Fix #20260718)
+
+**Issue**: Same email mapped to different user_ids across restarts
+**Root Cause**: `user_id` was derived from a timestamp, not the email
+**Fix**: Changed to MD5 hash of normalized email so same email always maps to same user_id
+**Files**: `core/auth/database.py`
+
+### 2.8 Empty Sidebar After Restart (Fix #20260718)
+
+**Issue**: Sidebar showed no threads after reload on some browsers
+**Root Cause**: `createThread()` called `saveThreadMeta()` before `renderThreadList()`. If `localStorage.setItem` threw (quota exceeded / private mode), the exception aborted the whole function and the sidebar never rendered
+**Fix**: Call `renderThreadList()` first, then wrap `saveThreadMeta()` in try/catch
+**Files**: `clients/web/index.html`
+
 ---
 
 ## 3. Implemented Features
@@ -68,7 +96,7 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | Task Engine | ✅ Complete | `core/task_engine/manager.py` |
 | Module System | ✅ Complete | `core/modules/registry.py` |
 
-### 3.2 Production Hardening (NEW)
+### 3.2 Production Hardening
 
 | Feature | Status | Implementation |
 |---------|--------|----------------|
@@ -81,7 +109,7 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | Task Cancellation | ✅ Complete | `/api/v1/tasks/{id}/cancel` |
 | Progress Tracking | ✅ Complete | Task progress 0-100% + message |
 
-### 3.2 Thread Isolation
+### 3.3 Thread Isolation
 
 | Feature | Status | Implementation |
 |---------|--------|----------------|
@@ -89,10 +117,13 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | Session Isolation | ✅ Complete | Ollama `/api/chat` with session_id |
 | Thread List | ✅ Complete | `/api/v1/threads` |
 | Thread Delete | ✅ Complete | `/api/v1/threads/{id}` |
+| Thread Messages | ✅ Complete | `/api/v1/threads/{id}/messages` |
+| Thread Name Derivation | ✅ Complete | From FAISS metadata (first entry) |
+| Past Message Loading | ✅ Complete | Loads messages from vector store on thread select |
 | Memory Merge | ✅ Complete | `/api/v1/memory/merge` |
 | ChatGPT-Style UI | ✅ Complete | `clients/web/index.html` |
 
-### 3.3 LLM Integration
+### 3.4 LLM Integration
 
 | Feature | Status | Implementation |
 |---------|--------|----------------|
@@ -100,9 +131,9 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | Independent Chat/Embed Models | ✅ Complete | Separate model selection |
 | Model Persistence | ✅ Complete | `storage/model.json` |
 | Remote Ollama Support | ✅ Complete | Via `.env` configuration |
-| Embedding Fallback | ✅ Complete | Graceful error handling |
+| Embedding Fallback | ✅ Complete | `/api/embed` → numpy hash |
 
-### 3.4 Chat with Attachments
+### 3.5 Chat with Attachments
 
 | Feature | Status | Implementation |
 |---------|--------|----------------|
@@ -112,7 +143,7 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | URL Extraction | ✅ Complete | BeautifulSoup |
 | Memory Save Option | ✅ Complete | User-controlled |
 
-### 3.5 Supported File Types
+### 3.6 Supported File Types
 
 | Type | Extension | Processing |
 |------|-----------|------------|
@@ -125,7 +156,7 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 | Image | `.jpg`, `.png`, `.gif` | Vision model |
 | URL | Any | BeautifulSoup |
 
-### 3.6 Clients
+### 3.7 Clients
 
 | Client | Status | Implementation |
 |--------|--------|----------------|
@@ -137,56 +168,76 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 
 ## 4. API Endpoints
 
-### 4.1 Core
+### 4.1 Auth
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/auth/request-login` | Login page |
+| POST | `/api/v1/auth/request-login` | Request magic link |
+| GET | `/api/v1/auth/verify` | Verify magic link (browser) |
+| POST | `/api/v1/auth/verify` | Verify magic link (API) |
+| GET | `/api/v1/auth/me` | Current user info |
+| POST | `/api/v1/auth/logout` | Logout |
+
+### 4.2 Core
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Server health |
 | POST | `/api/v1/chat` | Chat with session isolation |
 | POST | `/api/v1/chat-with-files` | Chat with attachments |
+| POST | `/api/v1/ingest` | Ingest text |
+| POST | `/api/v1/ingest/file` | Ingest file |
 
-### 4.2 Memory
+### 4.3 Memory
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/memory/add` | Add to memory |
-| POST | `/api/v1/memory/search` | Search memory |
 | DELETE | `/api/v1/memory/clear/{id}` | Clear memory |
 | POST | `/api/v1/memory/merge` | Merge threads |
 
-### 4.3 Threads
+### 4.4 Threads
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/threads` | List all threads |
 | GET | `/api/v1/threads/{id}/stats` | Thread statistics |
+| GET | `/api/v1/threads/{id}/messages` | Past message history |
 | DELETE | `/api/v1/threads/{id}` | Delete thread |
 
-### 4.4 Model Management
+### 4.5 Model Management
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/v1/model/list` | List available models |
-| GET | `/api/v1/model/current` | Get current models |
+| GET | `/api/v1/model` | Get current models |
 | POST | `/api/v1/model/switch` | Switch model |
-| GET | `/api/v1/model/validate` | Check connection |
 
-### 4.5 Tasks
+### 4.6 Tasks
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/v1/tasks/submit` | Submit background task |
 | GET | `/api/v1/tasks/{id}` | Get task status |
-| GET | `/api/v1/tasks/{id}/stream` | SSE progress stream (NEW) |
-| POST | `/api/v1/tasks/{id}/cancel` | Cancel running task (NEW) |
+| GET | `/api/v1/tasks/{id}/stream` | SSE progress stream |
+| POST | `/api/v1/tasks/{id}/cancel` | Cancel running task |
 | GET | `/api/v1/tasks` | List all tasks |
 
-### 4.6 Modules
+### 4.7 Modules
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/modules` | List modules |
 | POST | `/api/v1/modules/execute/{name}` | Execute module |
+
+### 4.8 Tools (Phase 3)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/tools` | List available tools |
+| POST | `/api/v1/tools/write-file` | Write/update file |
+| POST | `/api/v1/tools/exec-command` | Execute sandboxed command |
+| POST | `/api/v1/tools/generate-tests` | Generate unit tests |
 
 ---
 
@@ -197,8 +248,8 @@ A modular, local-first AI platform with RAG memory, multi-modal ingestion, and C
 ```bash
 # Core LLM (Required)
 OLLAMA_BASE_URL=http://localhost:11434
-CODELY_CHAT_MODEL=llama3.2:3b
-CODELY_EMBEDDING_MODEL=llama3.2:3b
+CODELY_CHAT_MODEL=qwen2.5-coder
+CODELY_EMBEDDING_MODEL=qwen2.5-coder
 
 # Server
 CODELY_API_HOST=0.0.0.0
@@ -242,6 +293,7 @@ Codely/
 │   │   └── vector_store.py  # FAISS implementation
 │   ├── rag/engine.py        # RAG processing
 │   ├── task_engine/manager.py # Task management
+│   ├── auth/                # Magic-link auth
 │   └── modules/             # Plugin registry
 ├── modules/search_web/      # DuckDuckGo module
 ├── clients/
@@ -276,7 +328,7 @@ pip install -e .
 
 # Configure
 echo OLLAMA_BASE_URL=http://localhost:11434 > .env
-echo CODELY_CHAT_MODEL=llama3.2:3b >> .env
+echo CODELY_CHAT_MODEL=qwen2.5-coder >> .env
 
 # Start
 python core/api/main.py
@@ -324,6 +376,7 @@ python core/api/main.py
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.7.0 | 2026-07-18 | Conversation persistence (rag.learn), embedding fallback for Ollama 0.30.6+, deterministic user_id (MD5 hash), empty sidebar fix, thread message history loading, thread name derivation, spec cleanup |
 | 0.6.1 | 2026-05-03 | Production fixes: timeouts, retry logic, rate limiting, SSE, progress tracking, .env.example |
 | 0.6.0 | 2026-05-03 | HNSW vector search, document chunking, document management API |
 | 0.5.0 | 2026-05-02 | Thinking modes, markdown rendering, permission web search |

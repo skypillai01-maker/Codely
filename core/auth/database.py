@@ -73,7 +73,9 @@ def get_user_by_id(user_id: str) -> dict | None:
         return dict(row) if row else None
 
 def create_user(email: str, display_name: str = None) -> dict:
-    user_id = f"user_{email.split('@')[0]}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    import hashlib
+    suffix = hashlib.md5(email.lower().encode()).hexdigest()[:12]
+    user_id = f"user_{email.split('@')[0]}_{suffix}"
     now = datetime.now(timezone.utc).isoformat()
 
     with get_db() as conn:

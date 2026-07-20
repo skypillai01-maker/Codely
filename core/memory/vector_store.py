@@ -243,11 +243,15 @@ class FAISSVectorStore(BaseMemory):
         
         entries = 0
         size = 0
+        name = context_id[:20]
         
         if os.path.exists(meta_file):
             with open(meta_file, "rb") as f:
                 metadata = pickle.load(f)
                 entries = len(metadata)
+                if entries > 0:
+                    first = metadata[0]["text"]
+                    name = first.replace("User: ", "").replace("\n\nAssistant:", " …").split("\n")[0][:60]
         
         if os.path.exists(index_file):
             size = os.path.getsize(index_file)
@@ -256,6 +260,7 @@ class FAISSVectorStore(BaseMemory):
             "context_id": context_id,
             "entries": entries,
             "size_bytes": size,
+            "name": name,
             "exists": os.path.exists(path)
         }
 
@@ -334,3 +339,17 @@ class FAISSVectorStore(BaseMemory):
             
         logger.info(f"Deleted document doc_id={doc_id} from context_id={context_id}")
         return True
+    
+    def get_messages(self, context_id: str) -> List[Dict[str, str]]:
+        """Read metadata.pkl and return parsed messages list."""
+        _, metadata = self._load_index(context_id)
+        messages = []
+        for entry in metadata:
+            text = entry["text"]
+            if text.startswith("User: ") and "\n\nAssistant: " in text:        
+                parts = text.split("\n\nAssistant: ", 1)
+                messages.append({"role": "user", "text": parts[0].replace("User: ", "", 1)})
+                messages.append({"role": "ai", "text": parts[1]})
+            else:
+                messages.append({"role": "user", "text": text})
+        return messages

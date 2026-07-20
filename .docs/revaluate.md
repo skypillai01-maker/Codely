@@ -1,13 +1,13 @@
-# Codely AI Platform: Revaluation Report (v0.6.1)
+# Codely AI Platform: Revaluation Report (v0.7.0)
 
-> **Living Document** | Last Updated: 2026-05-03
+> **Living Document** | Last Updated: 2026-07-18
 > **Status**: Production Ready | Phase 3 Complete | Production Hardened
 
 ---
 
 ## 1. Executive Summary
 
-**Version 0.5.0** delivers smart response modes (Quick/Thinking/Deep), rich markdown rendering with syntax-highlighted code blocks, and permission-based web research that only executes with user approval.
+**Version 0.7.0** adds conversation memory persistence, server-side thread names, deterministic user IDs, embedding fallbacks, and thread message history loading.
 
 **Overall Status**: **PRODUCTION READY**
 
@@ -333,6 +333,7 @@ except Exception as e:
 | Vision model mismatch | LOW | Workaround available |
 | Rerank placeholder | LOW | Returns input unchanged |
 | No test coverage | HIGH | Tests planned for Phase 4 |
+| No thread rename endpoint | LOW | Open |
 
 ---
 
@@ -365,6 +366,10 @@ except Exception as e:
 | Large files need timeouts | Configurable CHAT_TIMEOUT/EMBED_TIMEOUT |
 | Concurrent users need limits | Rate limiting + max tasks per user |
 | Progress feedback is essential | SSE endpoints + web UI progress bars |
+| Conversation not saved to FAISS | Chat endpoints must call rag.learn() after generate_with_context() |
+| Ollama drops embedding API | Embedding must have numpy hash fallback |
+| Thread names lost on cache clear | Server must derive thread name from FAISS metadata |
+| Empty sidebar after restart | Render DOM before localStorage write, wrap in try/catch |
 
 ---
 
@@ -401,7 +406,7 @@ except Exception as e:
 
 ---
 
-**Document Version**: 0.6.1
+**Document Version**: 0.7.0
 **Status**: Production Ready | Production Hardened
-**Last Updated**: 2026-05-03
+**Last Updated**: 2026-07-18
 **Enforcement**: STRICT - All violations are hard stops

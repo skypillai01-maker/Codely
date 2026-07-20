@@ -1,6 +1,6 @@
-# Execution & Verification Playbook (v0.6.0)
+# Execution & Verification Playbook (v0.7.0)
 
-> **Living Document** | Last Updated: 2026-05-02
+> **Living Document** | Last Updated: 2026-07-18
 > **Purpose**: Step-by-step verification of Codely platform
 
 ---
@@ -18,25 +18,23 @@
 ### 1.2 Ollama Setup
 
 ```bash
-# Install Ollama on remote machine
+# Install Ollama
 # Download from: https://ollama.com/download
 
-# Pull models (on remote machine)
-ollama pull llama3              # General chat
-ollama pull llama3.2:3b        # Lightweight chat
-ollama pull llava               # Vision (optional)
+# Pull model
+ollama pull qwen2.5-coder       # Chat + code generation
 
-# Verify from local machine
-curl http://192.168.0.104:11434/api/tags
+# Verify
+curl http://localhost:11434/api/tags
 ```
 
 ### 1.3 Environment Configuration
 
 Create `.env` file in project root:
 ```
-OLLAMA_BASE_URL=http://192.168.0.104:11434
-CODELY_CHAT_MODEL=llama3.2:3b
-CODELY_EMBEDDING_MODEL=llama3.2:3b
+OLLAMA_BASE_URL=http://localhost:11434
+CODELY_CHAT_MODEL=qwen2.5-coder
+CODELY_EMBEDDING_MODEL=qwen2.5-coder
 CODELY_API_PORT=8889
 ```
 
@@ -57,13 +55,16 @@ python -c "from core.config import CHAT_MODEL, EMBEDDING_MODEL, OLLAMA_BASE_URL;
 ### 2.1 Start Server
 
 ```bash
-# Method 1: Using npm
+# Method 1: Using run.py (recommended)
+python3 run.py
+
+# Method 2: Using npm
 npm start
 
-# Method 2: Using Python directly
+# Method 3: Using Python directly
 python core/api/main.py
 
-# Method 3: Using uvicorn
+# Method 4: Using uvicorn
 uvicorn core.api.main:app --host 0.0.0.0 --port 8889
 ```
 
@@ -77,7 +78,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8889
 **If Ollama is running:**
 ```
 [Startup] Ollama connection: OK
-[Startup] Available models: llama3, codellama
+[Startup] Available models: qwen2.5-coder
 ```
 
 **If Ollama is NOT running:**
@@ -98,37 +99,97 @@ curl http://localhost:8889/health
 **Expected Response:**
 ```json
 {
-  "status": "healthy",
-  "platform": "Codely AI",
-  "version": "0.2.0"
+  "status": "ok",
+  "service": "Codely AI",
+  "ollama": true
 }
 ```
 
 ---
 
-## 3. Phase 1 Verification
+## 3. Auth Setup
 
-### 3.1 Chat Endpoint
+> All API endpoints (except health check and auth itself) require authentication via Bearer session_id.
+
+### 3.1 Request Magic Link
 
 ```bash
-curl -X POST http://localhost:8889/api/v1/chat \
+curl -X POST http://localhost:8889/api/v1/auth/request-login \
   -H "Content-Type: application/json" \
-  -d '{"context_id": "test", "prompt": "Hello, what is 2+2?"}'
+  -d '{"email": "test@test.com"}'
 ```
 
 **Expected Response:**
 ```json
 {
-  "context_id": "test",
-  "response": "2 + 2 equals 4."
+  "message": "Magic link sent! Check your email (or console in dev mode).",
+  "dev_link": "http://localhost:8889/api/v1/auth/verify?token=..."
 }
 ```
 
-### 3.2 Chat with Files & URLs (NEW)
+### 3.2 Extract Session ID
+
+Use the `dev_link` from the response to get a session:
+
+```bash
+# Option A: Click the link in browser — session_id is set as URL param on redirect
+# Option B: Extract session_id programmatically via POST
+curl -X POST http://localhost:8889/api/v1/auth/verify \
+  -H "Content-Type: application/json" \
+  -d '{"token": "<TOKEN_FROM_DEV_LINK>"}'
+```
+
+**Expected Response (POST):**
+```json
+{
+  "session_id": "uuid-session-id",
+  "user_id": "uuid-user-id",
+  "email": "test@test.com"
+}
+```
+
+### 3.3 Use Auth on All Requests
+
+Set `SESSION_ID` and use on every subsequent request:
+
+```bash
+export SESSION_ID="<session_id_from_above>"
+
+# Example: authenticated request
+curl http://localhost:8889/api/v1/threads \
+  -H "Authorization: Bearer $SESSION_ID"
+```
+
+---
+
+## 4. Phase 1 Verification
+
+### 4.1 Chat Endpoint
+
+```bash
+curl -X POST http://localhost:8889/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
+  -d '{"context_id": "test", "prompt": "Hello, what is 2+2?", "mode": "normal"}'
+```
+
+**Expected Response:**
+```json
+{
+  "response": "2 + 2 equals 4.",
+  "tool_used": null,
+  "tool_suggestion": null
+}
+```
+
+### 4.2 Chat with Files & URLs
+
+> This endpoint uses optional auth — it works with or without `Authorization` header.
 
 **Test with file:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/chat-with-files \
+  -H "Authorization: Bearer $SESSION_ID" \
   -F "context_id=test" \
   -F "prompt=What is this document about?" \
   -F "files=@sample.txt"
@@ -137,6 +198,7 @@ curl -X POST http://localhost:8889/api/v1/chat-with-files \
 **Test with URL:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/chat-with-files \
+  -H "Authorization: Bearer $SESSION_ID" \
   -F "context_id=test" \
   -F "prompt=Summarize this webpage" \
   -F "urls=https://example.com"
@@ -145,6 +207,7 @@ curl -X POST http://localhost:8889/api/v1/chat-with-files \
 **Test with both:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/chat-with-files \
+  -H "Authorization: Bearer $SESSION_ID" \
   -F "context_id=test" \
   -F "prompt=Compare document and URL" \
   -F "files=@document.pdf" \
@@ -155,8 +218,10 @@ curl -X POST http://localhost:8889/api/v1/chat-with-files \
 **Expected Response:**
 ```json
 {
-  "context_id": "test",
   "response": "AI response here...",
+  "tool_used": null,
+  "tool_suggestion": null,
+  "mode": "normal",
   "attachments": {
     "files": ["sample.txt"],
     "urls": ["https://example.com"]
@@ -165,12 +230,13 @@ curl -X POST http://localhost:8889/api/v1/chat-with-files \
 }
 ```
 
-### 3.3 Memory Management
+### 4.3 Memory Management
 
 **Add Memory:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/memory/add \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "test", "text": "Python is a programming language."}'
 ```
 
@@ -178,30 +244,90 @@ curl -X POST http://localhost:8889/api/v1/memory/add \
 ```bash
 curl -X POST http://localhost:8889/api/v1/memory/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "test", "query": "programming", "limit": 5}'
 ```
 
 **Clear Memory:**
 ```bash
-curl -X DELETE http://localhost:8889/api/v1/memory/clear/test
+curl -X DELETE http://localhost:8889/api/v1/memory/clear/test \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
-### 3.3 Task Engine
+### 4.4 Thread Management
 
-**Submit Task:**
+**List Threads:**
 ```bash
-curl -X POST http://localhost:8889/api/v1/tasks/submit \
-  -H "Content-Type: application/json" \
-  -d '{"context_id": "test", "text": "Test task content"}'
+curl http://localhost:8889/api/v1/threads \
+  -H "Authorization: Bearer $SESSION_ID"
+```
+
+**Expected Response:**
+```json
+{
+  "threads": [
+    {
+      "id": "test",
+      "entries": 1,
+      "name": "Python is a programm…"
+    }
+  ],
+  "count": 1
+}
+```
+
+**Get Thread Messages:**
+```bash
+curl http://localhost:8889/api/v1/threads/test/messages \
+  -H "Authorization: Bearer $SESSION_ID"
+```
+
+**Expected Response:**
+```json
+{
+  "context_id": "test",
+  "messages": [
+    {"role": "user", "text": "Hello, what is 2+2?"},
+    {"role": "ai", "text": "2 + 2 equals 4."}
+  ],
+  "count": 2
+}
+```
+
+**Get Thread Stats:**
+```bash
+curl http://localhost:8889/api/v1/threads/test/stats \
+  -H "Authorization: Bearer $SESSION_ID"
+```
+
+**Delete Thread:**
+```bash
+curl -X DELETE http://localhost:8889/api/v1/threads/test \
+  -H "Authorization: Bearer $SESSION_ID"
+```
+
+### 4.5 Task Engine
+
+**List Tasks:**
+```bash
+curl http://localhost:8889/api/v1/tasks \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
 **Get Task Status:**
 ```bash
 # Replace {task_id} with actual task ID
-curl http://localhost:8889/api/v1/tasks/{task_id}
+curl http://localhost:8889/api/v1/tasks/{task_id} \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
-### 3.4 Module System
+**Cancel Task:**
+```bash
+curl -X POST http://localhost:8889/api/v1/tasks/{task_id}/cancel \
+  -H "Authorization: Bearer $SESSION_ID"
+```
+
+### 4.6 Module System
 
 **List Modules:**
 ```bash
@@ -212,52 +338,44 @@ curl http://localhost:8889/api/v1/modules
 ```bash
 curl -X POST http://localhost:8889/api/v1/modules/execute/WebSearch \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"params": {"query": "latest AI news"}}'
 ```
 
-### 3.5 Multi-Modal Ingestion
+### 4.7 Multi-Modal Ingestion
 
 **Upload File (Test with sample file):**
 ```bash
 curl -X POST http://localhost:8889/api/v1/ingest/file \
+  -H "Authorization: Bearer $SESSION_ID" \
   -F "context_id=test" \
   -F "file=@sample.pdf"
 ```
 
+**Ingest Text:**
+```bash
+curl -X POST http://localhost:8889/api/v1/ingest \
+  -H "Authorization: Bearer $SESSION_ID" \
+  -F "context_id=test" \
+  -F "text=Some content to ingest"
+```
+
 ---
 
-## 4. Phase 2 Verification (IMPLEMENTED)
+## 5. Phase 2 Verification
 
-### 4.1 Model Management
+### 5.1 Model Management
 
-**List Available Models:**
+**Get Current Model Config:**
 ```bash
-curl http://localhost:8889/api/v1/model/list
+curl http://localhost:8889/api/v1/model
 ```
 
 **Expected Response:**
 ```json
 {
-  "status": "success",
-  "runtime": "ollama",
-  "runtime_url": "http://192.168.0.104:11434",
-  "models": ["llama3.2:3b", "digital-rishi-3b:latest"]
-}
-```
-
-**Get Current Model:**
-```bash
-curl http://localhost:8889/api/v1/model/current
-```
-
-**Expected Response:**
-```json
-{
-  "status": "success",
-  "chat_model": "llama3.2:3b",
-  "embedding_model": "llama3.2:3b",
-  "runtime": "ollama",
-  "runtime_url": "http://192.168.0.104:11434"
+  "chat_model": "qwen2.5-coder",
+  "embedding_model": "qwen2.5-coder"
 }
 ```
 
@@ -265,79 +383,81 @@ curl http://localhost:8889/api/v1/model/current
 ```bash
 curl -X POST http://localhost:8889/api/v1/model/switch \
   -H "Content-Type: application/json" \
-  -d '{"model_type": "chat", "model_name": "llama3.2:3b"}'
-```
-
-**Validate Connectivity:**
-```bash
-curl http://localhost:8889/api/v1/model/validate
+  -d '{"model_type": "chat", "model_name": "qwen2.5-coder"}'
 ```
 
 **Expected Response:**
 ```json
 {
-  "status": "success",
-  "connected": true,
-  "runtime": "ollama",
-  "runtime_url": "http://192.168.0.104:11434",
-  "available_models": ["llama3.2:3b"]
+  "message": "Model chat switched to qwen2.5-coder",
+  "config": {
+    "chat_model": "qwen2.5-coder",
+    "embedding_model": "qwen2.5-coder"
+  }
 }
 ```
 
-### 4.2 Model Persistence
+### 5.2 Model Persistence
 
 After switching, check `storage/model.json`:
 ```json
 {
-  "chat_model": "llama3.2:3b",
-  "embedding_model": "llama3.2:3b"
+  "chat_model": "qwen2.5-coder",
+  "embedding_model": "qwen2.5-coder"
 }
 ```
 
-**Note**: Server restart required after model switch.
+**Note**: Model config changes take effect immediately at runtime.
 
-### 4.3 Project Management
+### 5.3 Project Management (PLANNED — Endpoints Not Yet Implemented)
 
 **Initialize Project:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/project/init \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"path": "./myproject", "auto_detect": true}'
 ```
 
 **Get Project Status:**
 ```bash
-curl http://localhost:8889/api/v1/project/status
+curl http://localhost:8889/api/v1/project/status \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
 **List Projects:**
 ```bash
-curl http://localhost:8889/api/v1/project/list
+curl http://localhost:8889/api/v1/project/list \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
 **Scan Project:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/project/scan \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"project_id": "myproject"}'
 ```
 
 **Get Project Tree:**
 ```bash
-curl "http://localhost:8889/api/v1/project/tree?project_id=myproject&depth=3"
+curl "http://localhost:8889/api/v1/project/tree?project_id=myproject&depth=3" \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
 **Close Project:**
 ```bash
-curl -X DELETE "http://localhost:8889/api/v1/project/close?project_id=myproject"
+curl -X DELETE "http://localhost:8889/api/v1/project/close?project_id=myproject" \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
-### 4.4 Execution Engine (Read-Only)
+### 5.4 Execution Engine (PLANNED — Endpoints Not Yet Implemented)
 
 **Analyze File:**
 ```bash
 curl -X POST http://localhost:8889/api/v1/execute/analyze \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"path": "core/config.py", "include_imports": true}'
 ```
 
@@ -345,6 +465,7 @@ curl -X POST http://localhost:8889/api/v1/execute/analyze \
 ```bash
 curl -X POST http://localhost:8889/api/v1/execute/explain \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"path": "core/llm/base.py", "depth": "detailed"}'
 ```
 
@@ -352,6 +473,7 @@ curl -X POST http://localhost:8889/api/v1/execute/explain \
 ```bash
 curl -X POST http://localhost:8889/api/v1/execute/suggest \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"path": "core/rag/engine.py"}'
 ```
 
@@ -359,47 +481,57 @@ curl -X POST http://localhost:8889/api/v1/execute/suggest \
 ```bash
 curl -X POST http://localhost:8889/api/v1/execute/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"pattern": "generate", "glob": "**/*.py"}'
 ```
 
 **Read File:**
 ```bash
-curl "http://localhost:8889/api/v1/execute/read?path=core/config.py&start_line=1&end_line=20"
+curl "http://localhost:8889/api/v1/execute/read?path=core/config.py&start_line=1&end_line=20" \
+  -H "Authorization: Bearer $SESSION_ID"
 ```
 
 ---
 
-## 5. Thread Isolation Testing (CRITICAL - Must Pass)
+## 6. Thread Isolation Testing (CRITICAL - Must Pass)
 
 > **⚠️ THIS TEST MUST PASS - It caught the thread memory contamination bug ⚠️**
+> Threads are now stored under `storage/memory/{user_id}/{thread_id}/` to enforce isolation.
 
-### 5.1 Thread Isolation Test (CRITICAL)
+### 6.1 Thread Isolation Test
 
 ```bash
+export USER_ID="<your_user_id_from_auth_setup>"
+
 # 1. Clear any existing test data
-curl -X DELETE http://localhost:8889/api/v1/threads/thread_iso_1 2>/dev/null
-curl -X DELETE http://localhost:8889/api/v1/threads/thread_iso_2 2>/dev/null
+curl -X DELETE http://localhost:8889/api/v1/threads/thread_iso_1 \
+  -H "Authorization: Bearer $SESSION_ID" 2>/dev/null
+curl -X DELETE http://localhost:8889/api/v1/threads/thread_iso_2 \
+  -H "Authorization: Bearer $SESSION_ID" 2>/dev/null
 
 # 2. Create Thread 1 with specific information
 curl -X POST http://localhost:8889/api/v1/memory/add \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "thread_iso_1", "text": "My secret code is 12345"}'
 
 # 3. Verify Thread 1 storage exists
 # Should show index.faiss and metadata.pkl
-ls storage/memory/thread_iso_1/
+ls storage/memory/$USER_ID/thread_iso_1/
 
 # 4. Create Thread 2 with DIFFERENT information
 curl -X POST http://localhost:8889/api/v1/memory/add \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "thread_iso_2", "text": "My secret code is 67890"}'
 
 # 5. Verify Thread 2 storage exists
-ls storage/memory/thread_iso_2/
+ls storage/memory/$USER_ID/thread_iso_2/
 
 # 6. Query Thread 1 - should NOT know about Thread 2
 curl -X POST http://localhost:8889/api/v1/memory/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "thread_iso_1", "query": "secret code", "limit": 5}'
 
 # Expected: Should return "12345" but NOT "67890"
@@ -407,16 +539,17 @@ curl -X POST http://localhost:8889/api/v1/memory/search \
 # 7. Query Thread 2 - should NOT know about Thread 1
 curl -X POST http://localhost:8889/api/v1/memory/search \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "thread_iso_2", "query": "secret code", "limit": 5}'
 
 # Expected: Should return "67890" but NOT "12345"
 ```
 
-### 5.2 Thread Isolation Verification Checklist
+### 6.2 Thread Isolation Verification Checklist
 
 ```
-[ ] Thread 1 storage directory exists (storage/memory/thread_iso_1/)
-[ ] Thread 2 storage directory exists (storage/memory/thread_iso_2/)
+[ ] Thread 1 storage directory exists (storage/memory/$USER_ID/thread_iso_1/)
+[ ] Thread 2 storage directory exists (storage/memory/$USER_ID/thread_iso_2/)
 [ ] Thread 1 index.faiss exists
 [ ] Thread 2 index.faiss exists
 [ ] Thread 1 metadata.pkl contains only Thread 1 data
@@ -425,23 +558,23 @@ curl -X POST http://localhost:8889/api/v1/memory/search \
 [ ] Search in Thread 2 returns only Thread 2 data
 ```
 
-### 5.3 Storage File Verification
+### 6.3 Storage File Verification
 
-```powershell
+```bash
 # Verify Thread 1 has files
-Test-Path "storage/memory/thread_iso_1/index.faiss"
-Test-Path "storage/memory/thread_iso_1/metadata.pkl"
+ls -la storage/memory/$USER_ID/thread_iso_1/index.faiss
+ls -la storage/memory/$USER_ID/thread_iso_1/metadata.pkl
 
 # Verify Thread 2 has files
-Test-Path "storage/memory/thread_iso_2/index.faiss"
-Test-Path "storage/memory/thread_iso_2/metadata.pkl"
+ls -la storage/memory/$USER_ID/thread_iso_2/index.faiss
+ls -la storage/memory/$USER_ID/thread_iso_2/metadata.pkl
 
-# Check file sizes (should be > 0)
-Get-Item "storage/memory/thread_iso_1/index.faiss" | Select-Object Length
-Get-Item "storage/memory/thread_iso_2/index.faiss" | Select-Object Length
+# Check file sizes
+ls -lh storage/memory/$USER_ID/thread_iso_1/index.faiss
+ls -lh storage/memory/$USER_ID/thread_iso_2/index.faiss
 ```
 
-### 5.4 Bug Signs to Watch For
+### 6.4 Bug Signs to Watch For
 
 ❌ **FAILURE INDICATORS**:
 - Storage directories don't exist after memory.add()
@@ -457,9 +590,7 @@ Get-Item "storage/memory/thread_iso_2/index.faiss" | Select-Object Length
 
 ---
 
-
-
-### 5.1 Web Client
+### 6.5 Web Client
 
 1. Navigate to `http://localhost:8889/`
 2. Verify page loads without errors
@@ -467,7 +598,7 @@ Get-Item "storage/memory/thread_iso_2/index.faiss" | Select-Object Length
 4. Send message: "Hello"
 5. Verify response received
 
-### 5.2 CLI Client
+### 6.6 CLI Client
 
 **Chat:**
 ```bash
@@ -484,7 +615,7 @@ python clients/cli/codely_cli.py memory --add "Important fact"
 python clients/cli/codely_cli.py modules --list
 ```
 
-### 5.3 Python SDK
+### 6.7 Python SDK
 
 ```python
 from clients.python_sdk.codely import CodelyClient
@@ -505,27 +636,28 @@ print(modules)
 
 ---
 
-## 6. Troubleshooting
+## 7. Troubleshooting
 
-### 6.1 Port Conflicts
+### 7.1 Port Conflicts
 
-**Error:** `OSError [WinError 10048]`
+**Error:** `Address already in use`
 
 **Cause:** Port already in use
 
 **Solution:**
 ```bash
 # Find process using port 8889
-netstat -ano | findstr :8889
+lsof -i :8889
+# OR: ss -tlnp | grep 8889
 
 # Kill process (replace PID)
-taskkill /F /PID <PID>
+kill -9 <PID>
 
 # OR change port in core/config.py
 API_PORT = 8888  # Use different port
 ```
 
-### 6.2 Ollama Connection
+### 7.2 Ollama Connection
 
 **Error:** `Could not connect to Ollama`
 
@@ -541,7 +673,7 @@ ollama serve
 curl http://192.168.0.104:11434/api/tags
 ```
 
-### 6.3 Embedding Errors
+### 7.3 Embedding Errors
 
 **Error:** `Embedding not available for model`
 
@@ -550,16 +682,16 @@ curl http://192.168.0.104:11434/api/tags
 **Solution:**
 ```bash
 # Update .env to use same model for chat and embeddings
-CODELY_CHAT_MODEL=llama3.2:3b
-CODELY_EMBEDDING_MODEL=llama3.2:3b
+CODELY_CHAT_MODEL=qwen2.5-coder
+CODELY_EMBEDDING_MODEL=qwen2.5-coder
 
-# Or install embedding model on Ollama
-ollama pull nomic-embed-text
+# Note: Ollama 0.30.6+ dropped /api/embeddings — the platform
+# falls back to inline embeddings from the chat model automatically
 ```
 
 **Note**: Chat continues to work even if embeddings fail (graceful fallback).
 
-### 6.3 Import Errors
+### 7.4 Import Errors
 
 **Error:** `ModuleNotFoundError: No module named 'core'`
 
@@ -572,14 +704,15 @@ pip install -e .
 python -c "import core; print(core.__file__)"
 ```
 
-### 6.4 Memory Issues
+### 7.5 Memory Issues
 
 **Error:** `FAISS index corrupted`
 
 **Solution:**
 ```bash
 # Clear memory for context
-curl -X DELETE http://localhost:8889/api/v1/memory/clear/{context_id}
+curl -X DELETE http://localhost:8889/api/v1/memory/clear/{context_id} \
+  -H "Authorization: Bearer $SESSION_ID"
 
 # OR manually delete storage
 rm -rf storage/memory/{context_id}/
@@ -587,9 +720,9 @@ rm -rf storage/memory/{context_id}/
 
 ---
 
-## 7. Advanced Verification
+## 8. Advanced Verification
 
-### 7.1 Uncensored Mode Test
+### 8.1 Uncensored Mode Test
 
 **Test Prompt:**
 ```
@@ -600,17 +733,17 @@ Give me an objective analysis of the pros and cons of nuclear energy.
 - ❌ Response should NOT contain: "As an AI...", "I'm sorry...", "I cannot..."
 - ✅ Response should be factual, balanced, and direct
 
-### 7.2 Task Persistence Test
+### 8.2 Task Persistence Test
 
-1. Submit a task via CLI
-2. Restart the server (`Ctrl+C`, then `npm start`)
+1. Submit a task via ingest
+2. Restart the server (`Ctrl+C`, then `python3 run.py`)
 3. Check task status:
 ```bash
 curl http://localhost:8889/api/v1/tasks/{task_id}
 ```
 4. Verify task state is recovered
 
-### 7.3 Multi-Modal Ingestion Test
+### 8.3 Multi-Modal Ingestion Test
 
 **Test with image:**
 ```bash
@@ -619,16 +752,18 @@ ollama pull llava
 
 # Upload image
 curl -X POST http://localhost:8889/api/v1/ingest/file \
+  -H "Authorization: Bearer $SESSION_ID" \
   -F "context_id=test" \
   -F "file=@sample_image.png"
 
 # Chat about the image
 curl -X POST http://localhost:8889/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"context_id": "test", "prompt": "What is in the uploaded image?"}'
+  -H "Authorization: Bearer $SESSION_ID" \
+  -d '{"context_id": "test", "prompt": "What is in the uploaded image?", "mode": "normal"}'
 ```
 
-### 7.4 Web Search Test
+### 8.4 Web Search Test
 
 **Test Prompt:**
 ```
@@ -641,9 +776,9 @@ What happened in AI news today?
 
 ---
 
-## 8. Performance Benchmarks
+## 9. Performance Benchmarks
 
-### 8.1 Startup Time
+### 9.1 Startup Time
 
 **Target:** < 5 seconds
 
@@ -651,45 +786,50 @@ What happened in AI news today?
 time python core/api/main.py
 ```
 
-### 8.2 Chat Response Time
+### 9.2 Chat Response Time
 
 **Target:** < 10 seconds (depends on model)
 
 ```bash
 time curl -X POST http://localhost:8889/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"context_id": "bench", "prompt": "Hello"}'
+  -H "Authorization: Bearer $SESSION_ID" \
+  -d '{"context_id": "bench", "prompt": "Hello", "mode": "normal"}'
 ```
 
-### 8.3 Memory Operations
+### 9.3 Memory Operations
 
 **Target:** < 1 second per operation
 
 ```bash
 time curl -X POST http://localhost:8889/api/v1/memory/add \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SESSION_ID" \
   -d '{"context_id": "bench", "text": "Test"}'
 ```
 
 ---
 
-## 9. Verification Checklist
+## 10. Verification Checklist
 
 ### Pre-Flight
 ```
 [ ] Ollama installed and running
-[ ] At least one model pulled (llama3 recommended)
+[ ] At least one model pulled (qwen2.5-coder recommended)
 [ ] Dependencies installed (pip install -e .)
 [ ] Port 8889 available
+[ ] Auth: session_id acquired
 ```
 
 ### Basic Functionality
 ```
 [ ] Server starts without errors
 [ ] Health endpoint responds
-[ ] Chat endpoint works
+[ ] Chat endpoint works (with auth + mode)
+[ ] Chat with files/URLs works (optional auth)
 [ ] Memory add/search/clear works
-[ ] Task submission works
+[ ] Thread list/messages/stats works
+[ ] Task list/status works
 ```
 
 ### Advanced Features
@@ -698,11 +838,12 @@ time curl -X POST http://localhost:8889/api/v1/memory/add \
 [ ] Web search module executes
 [ ] File ingestion works
 [ ] Multiple contexts isolated
+[ ] Thread messages API returns past messages
 ```
 
 ### Phase 2 Features (Planned)
 ```
-[ ] Model listing works
+[ ] Model config endpoint works
 [ ] Model switching works
 [ ] Project initialization works
 [ ] Code analysis works
@@ -727,10 +868,11 @@ time curl -X POST http://localhost:8889/api/v1/memory/add \
 
 ---
 
-## 10. Version History
+## 11. Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 0.7.0 | 2026-07-18 | Mandatory auth for all endpoints, thread messages API, fixed model endpoints, user_id-scoped storage paths |
 | 0.6.0 | 2026-05-02 | Phase 3: FileWrite, SandboxExec, TestGen modules |
 | 0.5.0 | 2026-05-02 | Multi-user auth, thinking modes, permission-based web search |
 | 0.3.0 | 2026-04-12 | Critical: Thread isolation test, silent exception rules |
@@ -741,6 +883,6 @@ time curl -X POST http://localhost:8889/api/v1/memory/add \
 
 ---
 
-**Document Version**: 0.6.0
-**Status**: ACTIVE - Phase 3 verification added
-**Last Updated**: 2026-05-02
+**Document Version**: 0.7.0
+**Status**: ACTIVE - Auth required for all endpoints
+**Last Updated**: 2026-07-18

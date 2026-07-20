@@ -1,7 +1,7 @@
-# Technical Decisions & Ruthless Guidelines (v0.6.0)
+# Technical Decisions & Ruthless Guidelines (v0.7.0)
 
-> **Living Document** | Last Updated: 2026-05-02
-> **Version**: 0.6.0 | **Enforcement**: STRICT - VIOLATIONS ARE HARD STOP
+> **Living Document** | Last Updated: 2026-07-18
+> **Version**: 0.7.0 | **Enforcement**: STRICT - VIOLATIONS ARE HARD STOP
 > **Rule**: Every mistake becomes a permanent rule. Fix once, document, never repeat.
 
 ---
@@ -71,7 +71,7 @@ All config comes from `core/config.py`
 
 ```python
 # ❌ FORBIDDEN
-MODEL = "llama3"
+MODEL = "hardcoded-model"
 URL = "http://localhost:11434"
 
 # ✅ REQUIRED
@@ -137,6 +137,87 @@ When bumping version, update ALL of these:
 - `.docs/VERIFICATION_PLAYBOOK.md`
 - `.docs/IMPLEMENTATION_SUMMARY.md`
 - `.docs/API_SPEC.md`
+
+### Rule 9: DOM VARIABLES DECLARED BEFORE USE (Frontend)
+
+> **Created from: Web UI ReferenceError crash (2026-07-18)**
+>
+> **Incident**: Chat thread list failed to render with `ReferenceError: threadList is not defined`
+> **Root Cause**: `threadList.innerHTML` called before `let threadList` declaration due to script ordering
+> **Fix**: Always use `document.getElementById()` with proper null checks
+
+```javascript
+// ❌ WRONG - implicit global, crashes if element not yet in DOM
+function refreshThreadList() {
+    threadList.innerHTML = "";
+}
+
+// ✅ CORRECT - explicit DOM lookup with guard
+const threadList = document.getElementById("threadList");
+function refreshThreadList() {
+    if (!threadList) return;
+    threadList.innerHTML = "";
+}
+```
+
+### Rule 10: CONVERSATION MUST BE SAVED TO MEMORY
+
+> **Created from: RAG memory never persisted conversations bug (2026-07-18)**
+>
+> **Incident**: Chat messages were never saved to FAISS memory. `rag.learn()` existed but was never called.
+> **Root Cause**: Both `/api/v1/chat` and `/api/v1/chat-with-files` skipped saving the Q&A pair after generation.
+> **Fix**: Call `rag.learn(context_id, conversation_text, metadata)` after every `rag.generate_with_context()`.
+
+Every chat endpoint MUST save the conversation to FAISS memory after generating a response:
+```python
+result = rag.generate_with_context(...)
+conversation = f"User: {prompt}\n\nAssistant: {result['response']}"
+rag.learn(context_id, conversation, {"type": "conversation", "mode": mode})
+```
+
+### Rule 11: EMBEDDING MUST HAVE FALLBACK
+
+> **Created from: Ollama 0.30.6+ dropped /api/embeddings (2026-07-18)**
+>
+> **Incident**: Memory saves failed silently because `/api/embeddings` returned 500.
+> **Root Cause**: OllamaAdapter.embed() only tried one API call with no fallback.
+> **Fix**: Try `/api/embed` first, then fall back to hash-based numpy embedding.
+
+Never depend on Ollama's embedding API alone. Always have a zero-dependency fallback:
+
+```python
+def embed(self, text):
+    try:
+        # Try Ollama's /api/embed
+        ...
+    except Exception:
+        # Fallback: numpy-based hash embedding (always works)
+        return self._fallback_embed(text)
+```
+
+### Rule 12: ONLY SHOW THREADS WITH CONTENT
+
+> **Created from: Web UI showed empty threads without conversations (2026-07-18)**
+>
+> **Incident**: Threads with 0 FAISS entries appeared as "Empty chat" in the sidebar.
+> **Root Cause**: `/api/v1/threads` returned every context directory regardless of content.
+> **Fix**: Filter threads by `entries > 0` using `get_stats()` before returning.
+
+Never return threads with zero FAISS entries — they have no conversation history to show.
+
+```python
+# ❌ WRONG - returns all directories
+contexts = store.list_contexts()
+return {"threads": [{"id": c} for c in contexts]}
+
+# ✅ CORRECT - only threads with content
+threads = []
+for c in store.list_contexts():
+    stats = store.get_stats(c)
+    if stats.get("entries", 0) > 0:
+        threads.append({"id": c, "entries": stats["entries"]})
+return {"threads": threads}
+```
 
 ---
 
@@ -583,13 +664,77 @@ Before ANY code change:
 - [ ] Web search requires user permission
 - [ ] File writes confined to workspace root (Phase 3)
 - [ ] Commands validated against blocked patterns (Phase 3)
+- [ ] Frontend: DOM elements via `document.getElementById()`, not implicit globals
+- [ ] Chat endpoints save conversation to FAISS via `rag.learn()` after generation
+- [ ] Embedding method has fallback when Ollama API is unavailable
 - [ ] Documentation updated if needed
 - [ ] Version updated in ALL files if version bump
 
 ---
 
-**Document Version**: 0.6.0
-**Total Rules**: 14 Parts + 13 Critical Rules
+### Rule 15: FRONTEND - Render Before Side-Effects
+
+> **Created from: Empty sidebar bug (2026-07-18)**
+>
+> **Incident**: After server restart, Windows 11 user saw completely empty sidebar even though threads existed on server.
+> **Root Cause**: `createThread()` called `saveThreadMeta()` (which writes to `localStorage`) BEFORE `renderThreadList()`. If `localStorage.setItem` throws (quota exceeded, private mode, disabled storage), the entire `createThread()` function aborts, and the sidebar never renders.
+> **Impact**: User sees blank sidebar + "New Chat" in header. Past threads exist on server but are invisible.
+
+```javascript
+// ❌ FORBIDDEN - localStorage write before DOM render
+function createThread() {
+    threads.unshift(thread);
+    saveThreadMeta();          // Can throw → aborts everything
+    renderThreadList();        // Never reached if localStorage fails
+    selectThread(thread.id);   // Never reached
+}
+
+// ✅ REQUIRED - Render first, then side-effect with try/catch
+function createThread() {
+    threads.unshift(thread);
+    renderThreadList();
+    selectThread(thread.id);
+    try { saveThreadMeta(); } catch(e) { console.warn(e); }
+}
+```
+
+### Rule 16: THREAD METADATA - Server Is Source of Truth
+
+> **Created from: Empty sidebar bug (2026-07-18)**
+>
+> **Incident**: Thread names stored only in `localStorage.thread_meta`. When browser cache is cleared or user switches devices, threads appear with truncated garbage IDs.
+> **Root Cause**: Thread name persisted only on client side. No server-side thread name storage.
+> **Impact**: Unrecognizable thread names after cache clear.
+
+```python
+# get_stats() MUST derive a human-readable name from FAISS metadata
+# so the frontend never needs localStorage for thread display
+def get_stats(self, context_id):
+    if entries > 0:
+        first = metadata[0]["text"]  # "User: Say hello\n\nAssistant: Hello!"
+        name = first.replace("User: ", "").split("\n")[0][:60]
+    return {"name": name, "entries": entries, ...}
+```
+
+### Rule 17: MESSAGE HISTORY - Store and Serve Full Conversation
+
+> **Created from: Empty chat area on thread selection (2026-07-18)**
+>
+> **Incident**: Selecting a server-loaded thread showed empty chat area. User had to send a new message before seeing any context.
+> **Root Cause**: `loadThreads()` set `messages: []` for server threads. No endpoint to load past message text.
+> **Impact**: Past conversation invisible until user sends another message.
+
+```python
+# REQUIRED: Provide a server endpoint to load full message history
+@app.get("/api/v1/threads/{context_id}/messages")
+async def get_thread_messages(context_id, current_user):
+    store = get_memory_store(current_user["user_id"])
+    messages = store.get_messages(context_id)  # Reads metadata.pkl
+    return {"messages": messages}
+```
+
+**Document Version**: 0.7.0
+**Total Rules**: 17 Parts + 16 Critical Rules
 **Status**: ACTIVE
-**Last Audit**: 2026-05-02
+**Last Audit**: 2026-07-18
 **Next Review**: After Phase 4

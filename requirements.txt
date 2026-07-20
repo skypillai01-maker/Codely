@@ -13,4 +13,7 @@ openpyxl
 python-pptx
 python-dotenv
 beautifulsoup4
+httpx
+langdetect
 lxml
+itsdangerous
