@@ -207,7 +207,10 @@ async def serve_login_page():
 
 @app.post("/api/v1/auth/request-login")
 async def request_login(body: MagicLinkRequest):
-    token = get_token_service().generate_magic_token(body.email)
+    # Use email as user_id for rate limiting
+    if not check_rate_limit(body.email, "auth_request", 5):
+        raise HTTPException(429, "Too many requests; try again later")
+    token = get_token_service().generate_magic_link(body.email)
     sent = get_email_service().send_magic_link(body.email, token)
     if not sent:
         raise HTTPException(500, "Failed to send magic link")
@@ -237,7 +240,10 @@ async def verify_magic_link(token: str):
 
 @app.post("/api/v1/auth/verify")
 async def verify_magic_link_post(body: VerifyTokenRequest):
-    user = get_token_service().verify_magic_token(body.token)
+    # Limit verify attempts by token (though token is short-lived, add basic limit)
+    if not check_rate_limit(body.token, "auth_verify", 10):
+        raise HTTPException(429, "Too many attempts; try again later")
+    user = get_token_service().verify_magic_link(body.token)
     if not user:
         raise HTTPException(400, "Invalid or expired token")
     expiry = (datetime.now(timezone.utc) + timedelta(seconds=AUTH_SESSION_EXPIRY)).isoformat()
@@ -466,11 +472,63 @@ async def ingest_file(
     def file_ingest_task(content_bytes, fname):
         store = get_memory_store(user_id)
         text = content_bytes.decode("utf-8", errors="ignore")
-        store.add(context_id, text, progress_callback=lambda p, m: None)
+        # Pass filename as source in metadata
+        store.add(context_id, text, metadata={"source": fname}, progress_callback=lambda p, m: None)
         return {"status": "success", "filename": fname}
 
     task_id = get_task_manager().submit(file_ingest_task, content, filename)
     return {"task_id": task_id, "status": "pending"}
+
+
+# ── Document Management Endpoints ──────────────────────────────
+
+@app.get("/api/v1/documents")
+async def list_documents(
+    context_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["user_id"]
+    store = get_memory_store(user_id)
+    
+    if context_id:
+        # List docs for specific context
+        docs = store.list_documents(context_id)
+        return {"context_id": context_id, "documents": docs}
+    else:
+        # List docs across all contexts
+        all_docs = []
+        contexts = store.list_contexts()
+        for ctx in contexts:
+            docs = store.list_documents(ctx)
+            for doc in docs:
+                doc["context_id"] = ctx
+                all_docs.append(doc)
+        return {"documents": all_docs}
+
+
+@app.delete("/api/v1/documents/{doc_id}")
+async def delete_document(
+    doc_id: str,
+    context_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    user_id = current_user["user_id"]
+    store = get_memory_store(user_id)
+    
+    if context_id:
+        # Delete from specific context
+        deleted = store.delete_document(context_id, doc_id)
+    else:
+        # Delete from all contexts
+        deleted = False
+        contexts = store.list_contexts()
+        for ctx in contexts:
+            if store.delete_document(ctx, doc_id):
+                deleted = True
+    
+    if not deleted:
+        raise HTTPException(404, f"Document with doc_id={doc_id} not found")
+    return {"status": "success", "message": f"Document doc_id={doc_id} deleted"}
 
 
 # ── Task endpoints ─────────────────────────────────────────────

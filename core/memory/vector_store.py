@@ -85,10 +85,24 @@ class FAISSVectorStore(BaseMemory):
 
     def add(self, context_id: str, text: str, metadata: Dict[str, Any] = None, progress_callback: Callable = None):
         try:
+            import hashlib
+            from datetime import datetime
+            
             # Split text into chunks
             chunks = self._split_text(text)
             if not chunks:
                 return
+
+            # Generate doc_id, source, timestamp for the document
+            doc_metadata = metadata or {}
+            if "doc_id" not in doc_metadata:
+                # Generate doc_id from text and current time
+                doc_id = hashlib.md5(f"{text[:1000]}{datetime.now().isoformat()}".encode()).hexdigest()[:8]
+                doc_metadata["doc_id"] = doc_id
+            if "source" not in doc_metadata:
+                doc_metadata["source"] = f"context_{context_id}"
+            if "timestamp" not in doc_metadata:
+                doc_metadata["timestamp"] = datetime.now().isoformat()
 
             # Generate embeddings in batches
             embeddings = []
@@ -126,7 +140,7 @@ class FAISSVectorStore(BaseMemory):
                 index.add(embedding_np)
                 chunk_metadata = {
                     "text": chunk_text,
-                    "metadata": metadata or {},
+                    "metadata": doc_metadata,
                     "chunk_index": len(existing_metadata)
                 }
                 existing_metadata.append(chunk_metadata)
@@ -254,3 +268,69 @@ class FAISSVectorStore(BaseMemory):
                 if os.path.isdir(item_path):
                     contexts.append(item)
         return contexts
+        
+    def list_documents(self, context_id: str) -> List[Dict[str, Any]]:
+        """List all ingested documents for a context."""
+        _, metadata = self._load_index(context_id)
+        if not metadata:
+            return []
+            
+        # Group by doc_id and get unique documents
+        docs = {}
+        for chunk in metadata:
+            doc_meta = chunk.get("metadata", {})
+            doc_id = doc_meta.get("doc_id")
+            if doc_id and doc_id not in docs:
+                # Already have this doc, just update
+                docs[doc_id]["chunk_count"] += 1
+            elif doc_id:
+                docs[doc_id] = {
+                    "doc_id": doc_id,
+                    "source": doc_meta.get("source"),
+                    "timestamp": doc_meta.get("timestamp"),
+                    "chunk_count": 1
+                }
+        return list(docs.values())
+        
+    def delete_document(self, context_id: str, doc_id: str) -> bool:
+        """Delete a document by doc_id, rebuilding the HNSW index."""
+        index, metadata = self._load_index(context_id)
+        if index is None or not metadata:
+            return False
+            
+        # Filter out chunks with this doc_id
+        kept_chunks = []
+        for chunk in metadata:
+            if chunk.get("metadata", {}).get("doc_id") != doc_id:
+                kept_chunks.append(chunk)
+                
+        if len(kept_chunks) == len(metadata):
+            # No chunks were removed
+            return False
+            
+        # Rebuild index with kept chunks
+        if kept_chunks:
+            # Need to get embeddings for kept chunks
+            # Re-embed or reconstruct vectors? Wait, we can reconstruct from old index!
+            dimension = index.d
+            new_index = faiss.IndexHNSWFlat(dimension, HNSW_M)
+            new_index.hnsw.efConstruction = HNSW_EF_CONSTRUCTION
+            new_index.hnsw.efSearch = HNSW_EF_SEARCH
+            
+            # Reconstruct vectors from old index and add to new index
+            new_metadata = []
+            for i, chunk in enumerate(metadata):
+                if chunk.get("metadata", {}).get("doc_id") != doc_id:
+                    vec = index.reconstruct(i)
+                    new_index.add(np.array([vec]))
+                    # Update chunk_index to new index
+                    chunk["chunk_index"] = len(new_metadata)
+                    new_metadata.append(chunk)
+                    
+            self._save_index(context_id, new_index, new_metadata)
+        else:
+            # No chunks left, clear the context
+            self.clear(context_id)
+            
+        logger.info(f"Deleted document doc_id={doc_id} from context_id={context_id}")
+        return True
